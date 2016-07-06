@@ -23,8 +23,14 @@ type Multicast struct {
 	pingCount    int
 }
 
+// Response struct is sent over a channel when a pong is successful
+type Response struct {
+	Payload []byte
+	SrcIP   net.IP
+}
+
 // PongCallback is passed to the Pong function
-type PongCallback func(payload []byte, srcIP net.IP) error
+// type PongCallback func(payload []byte, srcIP net.IP) error
 
 // NewMulticast return a Multicast struct and create the wg and shutdownChan
 func NewMulticast(address string) *Multicast {
@@ -131,7 +137,7 @@ func (m *Multicast) Ping() {
 }
 
 // Pong when a multicast is received we serve it
-func (m *Multicast) Pong(callback PongCallback, errc chan<- error) {
+func (m *Multicast) Pong(respChan chan<- Response, errc chan<- error) {
 	gaddr, err := net.ResolveUDPAddr("udp6", m.Address)
 	conn, err := net.ListenPacket("udp6", m.Address)
 	if err != nil {
@@ -189,13 +195,19 @@ func (m *Multicast) Pong(callback PongCallback, errc chan<- error) {
 
 			// check if b is a valid address format
 			payload := b
-			err = callback(payload, src.(*net.UDPAddr).IP)
-			if err != nil {
-				// fmt.Println(err)
-				// errChan <- err
-				continue
+			resp := Response{
+				Payload: payload,
+				SrcIP:   src.(*net.UDPAddr).IP,
 			}
-		case <-m.stopPingChan:
+
+			respChan <- resp
+			// err = callback(payload, src.(*net.UDPAddr).IP)
+			// if err != nil {
+			// 	// fmt.Println(err)
+			// 	// errChan <- err
+			// 	continue
+			// }
+		case <-m.stopPongChan:
 			return
 		}
 	}

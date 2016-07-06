@@ -2,7 +2,6 @@ package multicast
 
 import (
 	"fmt"
-	"net"
 	"os"
 	"testing"
 )
@@ -24,24 +23,40 @@ func TestMain(m *testing.M) {
 func TestPingPong(t *testing.T) {
 	waitChan := make(chan struct{})
 	errChan := make(chan error)
+	respChan := make(chan Response)
+	shutdownChan := make(chan struct{})
+	defer close(shutdownChan)
 
-	go testMulticast.Pong(func(payload []byte, src net.Addr) error {
-		fmt.Println("Received Ping from:", src, "they said:", string(payload))
+	go testMulticast.Pong(respChan, errChan)
 
-		if string(payload) != string(testMulticast.Payload) {
-			t.Errorf("message didn't send correctly. Should be %s. Received %s",
-				string(testMulticast.Payload), string(payload))
+	go func() {
+		for {
+			select {
+			default:
+				resp := <-respChan
+				fmt.Println("Received Ping from:", resp.SrcIP, "they said:", string(resp.Payload))
+				if string(resp.Payload) != string(testMulticast.Payload) {
+					t.Errorf("message didn't send correctly. Should be %s. Received %s",
+						string(testMulticast.Payload), string(resp.Payload))
+				}
+
+				close(waitChan)
+			case <-shutdownChan:
+				return
+			}
+
 		}
-
-		close(waitChan)
-
-		return nil
-	}, errChan)
+	}()
 
 	// Print pong errors
 	go func() {
 		for {
-			fmt.Println("Pong Error:", <-errChan)
+			select {
+			default:
+				fmt.Println("Pong Error:", <-errChan)
+			case <-shutdownChan:
+				return
+			}
 		}
 	}()
 
