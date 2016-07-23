@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"net"
 	"strings"
-	"sync"
 	"time"
 
 	"golang.org/x/net/ipv6"
@@ -13,14 +12,13 @@ import (
 
 // Multicast struct
 type Multicast struct {
-	sync.Mutex
-	Address      string
-	Payload      []byte
-	Retries      int
+	// Address      string
+	// Payload      []byte
+	Retries      int32
 	Timeout      time.Duration
-	stopPongChan chan struct{}
-	stopPingChan chan struct{}
-	pingCount    int
+	StopPongChan chan struct{}
+	StopPingChan chan struct{}
+	// pingCount    *int32
 }
 
 // Response struct is sent over a channel when a pong is successful
@@ -29,33 +27,37 @@ type Response struct {
 	SrcIP   net.IP
 }
 
+// ErrNoIPv6 error if no IPv6 interfaces were found
+var ErrNoIPv6 = errors.New("Couldn't find any IPv6 network intefaces")
+
 // PongCallback is passed to the Pong function
 // type PongCallback func(payload []byte, srcIP net.IP) error
 
 // NewMulticast return a Multicast struct and create the wg and shutdownChan
-func NewMulticast(address string) *Multicast {
-	m := new(Multicast)
-	m.Address = address
-	m.Retries = 3
-	m.Timeout = 3
-	m.stopPingChan = make(chan struct{})
-	m.stopPongChan = make(chan struct{})
-
-	return m
-}
+// func NewMulticast(address string) *Multicast {
+// 	m := new(Multicast)
+// 	m.Address = address
+// 	m.Retries = 3
+// 	m.Timeout = 3
+// 	// m.pingCount = new(int32)
+// 	m.stopPingChan = make(chan struct{})
+// 	m.stopPongChan = make(chan struct{})
+//
+// 	return m
+// }
 
 // Ping out to try to find others listening
-func (m *Multicast) Ping() {
-	gaddr, err := net.ResolveUDPAddr("udp6", m.Address)
+func (m *Multicast) Ping(addr string, payload []byte, errc chan<- error) {
+	gaddr, err := net.ResolveUDPAddr("udp6", addr)
 	if err != nil {
-		fmt.Println(err)
-		return
+		// fmt.Println(err)
+		errc <- err
 	}
 
 	conn, err := net.ListenPacket("udp6", ":0")
 	if err != nil {
-		fmt.Println(err)
-		return
+		// fmt.Println(err)
+		errc <- err
 	}
 
 	pconn := ipv6.NewPacketConn(conn)
@@ -64,12 +66,12 @@ func (m *Multicast) Ping() {
 		HopLimit: 1,
 	}
 
-	bs := m.Payload
+	bs := payload
 	// for bs := range w.inbox {
 	intfs, err := net.Interfaces()
 	if err != nil {
-		fmt.Println(err)
-		return
+		// fmt.Println(err)
+		errc <- err
 	}
 
 	for {
@@ -77,10 +79,10 @@ func (m *Multicast) Ping() {
 		default:
 			// Keep trying every three seconds until shutdownChan is closed or
 			// we tried 3 times
-			if m.pingCount >= m.Retries {
-				fmt.Println("Warning: Ping timed out without a response. Please verify your network interfaces have IPv6 support.")
-				// return
-			}
+			// if atomic.LoadInt32(m.pingCount) >= m.Retries {
+			// 	fmt.Println("Warning: Ping timed out without a response. Please verify your network interfaces have IPv6 support.")
+			// 	// return
+			// }
 
 			// Track if any of the interfaces succesfully sent a message
 			success := 0
@@ -118,28 +120,26 @@ func (m *Multicast) Ping() {
 			}
 
 			if success <= 0 {
-				fmt.Println("Couldn't find any IPv6 network intefaces")
-				return
+				// fmt.Println("Couldn't find any IPv6 network intefaces")
+				errc <- ErrNoIPv6
 			}
 
 			// fmt.Printf("Tried %d interfaces \n", success)
 
 			// Let's wait 3 seconds before pinging again
-			m.Lock()
-			m.pingCount++
-			m.Unlock()
+			// atomic.AddInt32(m.pingCount, 1)
 
 			time.Sleep(time.Second * m.Timeout)
-		case <-m.stopPingChan:
+		case <-m.StopPingChan:
 			return
 		}
 	}
 }
 
 // Pong when a multicast is received we serve it
-func (m *Multicast) Pong(respChan chan<- Response, errc chan<- error) {
-	gaddr, err := net.ResolveUDPAddr("udp6", m.Address)
-	conn, err := net.ListenPacket("udp6", m.Address)
+func (m *Multicast) Pong(addr string, respChan chan<- Response, errc chan<- error) {
+	gaddr, err := net.ResolveUDPAddr("udp6", addr)
+	conn, err := net.ListenPacket("udp6", addr)
 	if err != nil {
 		// fmt.Println(err)
 		errc <- err
@@ -189,9 +189,7 @@ func (m *Multicast) Pong(respChan chan<- Response, errc chan<- error) {
 			fmt.Printf("recv %d bytes from %s \n", n, src)
 
 			// Received a ping. Decrement ping count
-			m.Lock()
-			m.pingCount--
-			m.Unlock()
+			// atomic.AddInt32(m.pingCount, 1)
 
 			// check if b is a valid address format
 			payload := b
@@ -207,7 +205,7 @@ func (m *Multicast) Pong(respChan chan<- Response, errc chan<- error) {
 			// 	// errChan <- err
 			// 	continue
 			// }
-		case <-m.stopPongChan:
+		case <-m.StopPongChan:
 			return
 		}
 	}
@@ -215,12 +213,12 @@ func (m *Multicast) Pong(respChan chan<- Response, errc chan<- error) {
 
 // StopPing returns out of ping
 func (m *Multicast) StopPing() {
-	close(m.stopPingChan)
+	close(m.StopPingChan)
 }
 
 // StopPong returns out of ping
 func (m *Multicast) StopPong() {
-	close(m.stopPongChan)
+	close(m.StopPongChan)
 }
 
 // containsIPv6 checks to see if any net.Addr has an IPv6 address
