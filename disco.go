@@ -3,7 +3,6 @@ package disco
 import (
 	"fmt"
 
-	"gitlab.fg/go/disco/multicast"
 	"gitlab.fg/go/disco/node"
 )
 
@@ -41,10 +40,16 @@ func (d *Disco) monitorRegister() {
 		select {
 		case n := <-d.writeNodeChan:
 			// Now that it's registered tell others about us
-			n.Serve(func(n *node.Node) {
-				fmt.Println("server being called?")
+			err := n.Listen(func(n *node.Node) {
+				fmt.Println("serve being called?", n)
 				d.discoveredChan <- n
 			})
+
+			if err != nil {
+				fmt.Println("node serve error", err)
+			}
+
+			fmt.Println("where?", n)
 
 			// Add to registered slice
 			d.registered = append(d.registered, n)
@@ -57,6 +62,9 @@ func (d *Disco) monitorRegister() {
 				if no == n {
 					// remove it from the slice
 					d.registered = append(d.registered[:i], d.registered[i+1:]...)
+
+					// Make sure the node isn't Serving multicast pings any more
+					n.Shutdown()
 				}
 			}
 		case <-d.readNodesChan:
@@ -73,13 +81,17 @@ func (d *Disco) monitorRegister() {
 // Register takes a node and registers it to be discovered
 func (d *Disco) Register(n *node.Node) {
 	// Send the node over the nodeChan with the action register
+	// for n := range nodes {
 	d.writeNodeChan <- n
+	// }
 }
 
 // Deregister takes a node and deregisters it
 func (d *Disco) Deregister(n *node.Node) {
 	// Send the node over the nodeChan with the action deregister
+	// for n := range nodes {
 	d.deleteNodeChan <- n
+	// }
 }
 
 // GetRegistered returns all nodes that are registered
@@ -91,14 +103,30 @@ func (d *Disco) GetRegistered() []*node.Node {
 }
 
 // Discover uses multicast to find all other nodes that are registered
-func (d *Disco) Discover(multicastAddress string) (<-chan *node.Node, <-chan error) {
-	// n := new(node.Node)
-	m := multicast.NewMulticast(multicastAddress)
-	m.Ping()
+func (d *Disco) Discover(multicastAddress string, errChan chan error) (nodes <-chan *node.Node) {
+	// nodeChan := make(chan *node.Node)
 
-	errc := make(chan error, 1)
+	// go func() {
+	// 	for {
+	// 		select {
+	// 		case node := <-d.discoveredChan:
+	// 			fmt.Println("Discover: found node?", node)
+	// 			// nodeChan <- node
+	// 		case <-d.closeChan:
+	// 		}
+	// 	}
+	// }()
 
-	return d.discoveredChan, errc
+	// Start sending pings from all the nodes registered
+	registeredNodes := d.GetRegistered()
+	for _, n := range registeredNodes {
+		go n.Ping(errChan)
+	}
+
+	// errc := make(chan error, 1)
+
+	return d.discoveredChan
+	// return d.discoveredChan, errc
 }
 
 // Stop closes the NodeChan to stop receiving nodes found

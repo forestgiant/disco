@@ -30,7 +30,6 @@ func TestRegister(t *testing.T) {
 	n := new(node.Node)
 	n.MulticastAddress = testMulticastAddress
 	n.IPv4Address = "127.0.0.1"
-	n.IgnoreLocalPing = false
 
 	waitChan := make(chan struct{})
 
@@ -51,6 +50,7 @@ func TestRegister(t *testing.T) {
 	// Wait till register is complete
 	<-waitChan
 
+	waitChan = make(chan struct{})
 	// Now let's Deregister the node
 	go func() {
 		d.Deregister(n)
@@ -59,19 +59,39 @@ func TestRegister(t *testing.T) {
 			t.Errorf("TestDeregister: All nodes should be deregistered. Received: %b, Should be: %b \n",
 				len(nodes), 0)
 		}
+
+		close(waitChan)
 	}()
+
+	// Wait till deregister is complete
+	<-waitChan
 }
 
 func TestDiscover(t *testing.T) {
-	nodeChan, errChan := d.Discover(testMulticastAddress)
+	// Make sure we have a node registered for testing
+	n := &node.Node{
+		MulticastAddress: testMulticastAddress,
+		IPv4Address:      "9.0.0.1",
+	}
+	d.Register(n)
+	waitChan := make(chan struct{})
+
+	errChan := make(chan error)
+	discoveredChan := d.Discover(testMulticastAddress, errChan)
+
 	go func() {
-		select {
-		case n := <-nodeChan:
-			fmt.Println("Found a node!", n)
-		case err := <-errChan:
-			fmt.Println("Error!", err)
+		for {
+			select {
+			case n := <-discoveredChan:
+				fmt.Println("Found a node!!!!", n)
+				close(waitChan)
+			case err := <-errChan:
+				fmt.Println("Error!", err)
+			}
 		}
 	}()
+
+	<-waitChan
 }
 
 func TestStop(t *testing.T) {
