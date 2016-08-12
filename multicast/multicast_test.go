@@ -13,6 +13,7 @@ var testMulticast *Multicast
 
 func TestMain(m *testing.M) {
 	testMulticast = &Multicast{
+		Address:      testMulticastAddress,
 		Retries:      3,
 		Timeout:      3,
 		StopPingChan: make(chan struct{}),
@@ -32,7 +33,7 @@ func TestPingPong(t *testing.T) {
 	shutdownChan := make(chan struct{})
 	defer close(shutdownChan)
 
-	go testMulticast.Pong(testMulticastAddress, respChan, errChan)
+	go testMulticast.Pong(respChan, errChan)
 
 	go func() {
 		for {
@@ -65,7 +66,7 @@ func TestPingPong(t *testing.T) {
 	}(errChan)
 
 	errChan = make(chan error)
-	go testMulticast.Ping(testMulticastAddress, payload, errChan)
+	go testMulticast.Ping(payload, errChan)
 
 	// Print ping error
 	go func(errc chan error) {

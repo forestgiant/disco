@@ -1,6 +1,7 @@
 package disco
 
 import (
+	"errors"
 	"fmt"
 
 	"gitlab.fg/go/disco/node"
@@ -39,10 +40,11 @@ func (d *Disco) monitorRegister() {
 	for {
 		select {
 		case n := <-d.writeNodeChan:
-			// Now that it's registered tell others about us
-			err := n.Listen(func(n *node.Node) {
+			// Now that it's registered listen for others
+			err := n.Listen(func(n *node.Node) error {
 				fmt.Println("serve being called?", n)
 				d.discoveredChan <- n
+				return errors.New("wait")
 			})
 
 			if err != nil {
@@ -103,7 +105,7 @@ func (d *Disco) GetRegistered() []*node.Node {
 }
 
 // Discover uses multicast to find all other nodes that are registered
-func (d *Disco) Discover(multicastAddress string, errChan chan error) (nodes <-chan *node.Node) {
+func (d *Disco) Discover() (nodes <-chan *node.Node) {
 	// nodeChan := make(chan *node.Node)
 
 	// go func() {
@@ -120,7 +122,8 @@ func (d *Disco) Discover(multicastAddress string, errChan chan error) (nodes <-c
 	// Start sending pings from all the nodes registered
 	registeredNodes := d.GetRegistered()
 	for _, n := range registeredNodes {
-		go n.Ping(errChan)
+		fmt.Println("ping for", n)
+		go n.Ping()
 	}
 
 	// errc := make(chan error, 1)

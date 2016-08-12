@@ -74,19 +74,24 @@ func TestDiscover(t *testing.T) {
 		IPv4Address:      "9.0.0.1",
 	}
 	d.Register(n)
+
+	n = &node.Node{
+		MulticastAddress: testMulticastAddress,
+		IPv4Address:      "8.8.0.1",
+	}
+	d.Register(n)
 	waitChan := make(chan struct{})
 
-	errChan := make(chan error)
-	discoveredChan := d.Discover(testMulticastAddress, errChan)
+	discoveredChan := d.Discover()
 
 	go func() {
 		for {
 			select {
 			case n := <-discoveredChan:
 				fmt.Println("Found a node!!!!", n)
-				close(waitChan)
-			case err := <-errChan:
-				fmt.Println("Error!", err)
+				// close(waitChan)
+				// case err := <-errChan:
+				// 	fmt.Println("Error!", err)
 			}
 		}
 	}()

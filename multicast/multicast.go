@@ -2,7 +2,7 @@ package multicast
 
 import (
 	"errors"
-	"fmt"
+	"log"
 	"net"
 	"strings"
 	"time"
@@ -12,7 +12,7 @@ import (
 
 // Multicast struct
 type Multicast struct {
-	// Address      string
+	Address string
 	// Payload      []byte
 	Retries      int32
 	Timeout      time.Duration
@@ -47,8 +47,8 @@ var ErrNoIPv6 = errors.New("Couldn't find any IPv6 network intefaces")
 // }
 
 // Ping out to try to find others listening
-func (m *Multicast) Ping(addr string, payload []byte, errc chan<- error) {
-	gaddr, err := net.ResolveUDPAddr("udp6", addr)
+func (m *Multicast) Ping(payload []byte, errc chan<- error) {
+	gaddr, err := net.ResolveUDPAddr("udp6", m.Address)
 	if err != nil {
 		// fmt.Println(err)
 		errc <- err
@@ -110,11 +110,11 @@ func (m *Multicast) Ping(addr string, payload []byte, errc chan<- error) {
 				pconn.SetWriteDeadline(time.Time{})
 
 				if err != nil {
-					fmt.Println(err)
+					// fmt.Println(err)
 					continue
 				}
 
-				fmt.Println("Sending Ping on interface:", intf.Name, intf.Flags)
+				log.Println("Sending Ping on interface:", intf.Name, intf.Flags)
 				// fmt.Printf("sent %d bytes to %v on %s \n", len(bs), gaddr, intf.Name)
 				success++
 			}
@@ -137,9 +137,9 @@ func (m *Multicast) Ping(addr string, payload []byte, errc chan<- error) {
 }
 
 // Pong when a multicast is received we serve it
-func (m *Multicast) Pong(addr string, respChan chan<- Response, errc chan<- error) {
-	gaddr, err := net.ResolveUDPAddr("udp6", addr)
-	conn, err := net.ListenPacket("udp6", addr)
+func (m *Multicast) Pong(respChan chan<- Response, errc chan<- error) {
+	gaddr, err := net.ResolveUDPAddr("udp6", m.Address)
+	conn, err := net.ListenPacket("udp6", m.Address)
 	if err != nil {
 		// fmt.Println(err)
 		errc <- err
@@ -186,7 +186,7 @@ func (m *Multicast) Pong(addr string, respChan chan<- Response, errc chan<- erro
 			copy(b, buf)
 
 			// fmt.Printf("recv %d bytes from %s, message? %s \n", n, src, b)
-			fmt.Printf("recv %d bytes from %s \n", n, src)
+			log.Printf("recv %d bytes from %s \n", n, src)
 
 			// Received a ping. Decrement ping count
 			// atomic.AddInt32(m.pingCount, 1)

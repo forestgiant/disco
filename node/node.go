@@ -17,13 +17,13 @@ import (
 // )
 
 // ListenCallback called when a listener is pinged
-type ListenCallback func(n *Node)
+// type ListenCallback func(rn *Node) error
 
 // Node represents a machine registered with Disco
 type Node struct {
 	IPv6Address      string
 	IPv4Address      string
-	SrcIP            net.Addr
+	SrcIP            net.IP
 	MulticastAddress string
 	ErrChan          chan error
 	shutdownChan     chan struct{}
@@ -31,6 +31,27 @@ type Node struct {
 	multicast *multicast.Multicast
 
 	RespondLocalPing bool // Used for testing
+}
+
+// Equal compares nodes
+func Equal(a, b *Node) bool {
+	if a.IPv4Address != b.IPv4Address {
+		return false
+	}
+
+	if a.IPv6Address != b.IPv6Address {
+		return false
+	}
+
+	if a.MulticastAddress != b.MulticastAddress {
+		return false
+	}
+
+	// if a.SrcIP.String() != b.SrcIP.String() {
+	// 	return false
+	// }
+
+	return true
 }
 
 // GobEncode gob interface
@@ -47,6 +68,11 @@ func (n *Node) GobEncode() ([]byte, error) {
 		return nil, err
 	}
 
+	err = encoder.Encode(n.MulticastAddress)
+	if err != nil {
+		return nil, err
+	}
+
 	return w.Bytes(), nil
 }
 
@@ -58,11 +84,15 @@ func (n *Node) GobDecode(buf []byte) error {
 	if err != nil {
 		return err
 	}
-	return decoder.Decode(&n.IPv6Address)
+	err = decoder.Decode(&n.IPv6Address)
+	if err != nil {
+		return err
+	}
+	return decoder.Decode(&n.MulticastAddress)
 }
 
 // Listen enables the node to listen for other Pings from multicast sends
-func (n *Node) Listen(callback ListenCallback) error {
+func (n *Node) Listen(results chan<- *Node) error {
 	// Start monitoring for multicast
 	if n.MulticastAddress == "" {
 		return errors.New("must have multicast address")
@@ -70,6 +100,7 @@ func (n *Node) Listen(callback ListenCallback) error {
 
 	// m := multicast.NewMulticast(n.MulticastAddress)
 	m := &multicast.Multicast{
+		Address:      n.MulticastAddress,
 		Retries:      3,
 		Timeout:      3,
 		StopPingChan: make(chan struct{}),
@@ -81,29 +112,38 @@ func (n *Node) Listen(callback ListenCallback) error {
 
 	respChan := make(chan multicast.Response)
 
-	go n.multicast.Pong(n.MulticastAddress, respChan, n.ErrChan)
+	go n.multicast.Pong(respChan, n.ErrChan)
 
 	go func() {
 		for {
 			select {
 			case resp := <-respChan:
-				fmt.Println("Received Ping from:", resp.SrcIP, "they said:", string(resp.Payload))
+				// fmt.Println("Received Ping from:", resp.SrcIP, "they said:", string(resp.Payload))
 
 				buffer := bytes.NewBuffer(resp.Payload)
-				n := new(Node)
+				rn := new(Node)
 				dec := gob.NewDecoder(buffer)
-				err := dec.Decode(n)
+				err := dec.Decode(rn)
 				if err != nil {
 					// fmt.Println("Node callback error:", err)
 					n.ErrChan <- err
 				}
-				// fmt.Println(n, err)
+
+				fmt.Println("is node coorect", rn)
 
 				// Set the source address
-				// n.SrcAddress = srcIP
+				rn.SrcIP = resp.SrcIP
 
-				callback(n)
-				return
+				// Only proceed if the received node (rn) isn't equal to the node listening (n)
+				if Equal(n, rn) {
+					continue
+				}
+
+				results <- rn
+				// callback(rn)
+				// if err := callback(rn); err == nil {
+				// 	return
+				// }
 			case <-n.shutdownChan:
 				return
 			}
@@ -114,25 +154,48 @@ func (n *Node) Listen(callback ListenCallback) error {
 	return nil
 }
 
-// Ping starts the mulicast ping
-func (n *Node) Ping(errChan chan error) {
+// Multicast start the mulicast ping
+func (n *Node) Multicast() error {
+	if n.multicast == nil {
+		return errors.New("No multicast created for node.")
+	}
+
 	// Encode node to be sent via multicast
 	buf := new(bytes.Buffer)
 	enc := gob.NewEncoder(buf)
 	err := enc.Encode(n)
 	if err != nil {
-		errChan <- err
+		return err
 	}
 
-	n.multicast.Ping(n.MulticastAddress, buf.Bytes(), errChan)
+	go n.multicast.Ping(buf.Bytes(), n.ErrChan)
+
+	return nil
+}
+
+// StopMulticast stops the node from pinging
+func (n *Node) StopMulticast() error {
+	if n.multicast == nil {
+		return errors.New("No multicast created for node.")
+	}
+
+	n.multicast.StopPing()
+
+	return nil
 }
 
 // Shutdown stops the serving of multicast pings
-func (n *Node) Shutdown() {
+func (n *Node) Shutdown() error {
+	if n.multicast == nil {
+		return errors.New("No multicast created for node.")
+	}
+
 	close(n.shutdownChan)
 	n.multicast.StopPong()
 	n.multicast.StopPing()
-	fmt.Println("shutdown the ping pong!")
+
+	return nil
+	// fmt.Println("shutdown the ping pong!")
 }
 
 // Notify pings other nodes using multicast to let them know it's here
