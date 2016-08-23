@@ -23,13 +23,13 @@ func TestPingPong(t *testing.T) {
 	respChan := make(chan Response)
 	ctx, cancelFunc := context.WithCancel(context.Background())
 
-	go testMulticast.Pong(ctx, respChan, errChan)
+	go testMulticast.Listen(ctx, respChan, errChan)
 
 	go func() {
 		for {
 			select {
 			case resp := <-respChan:
-				fmt.Println("Received Ping from:", resp.SrcIP, "they said:", string(resp.Payload))
+				fmt.Println("Received Send from:", resp.SrcIP, "they said:", string(resp.Payload))
 				if string(resp.Payload) != string(payload) {
 					t.Errorf("message didn't send correctly. Should be %s. Received %s",
 						string(payload), string(resp.Payload))
@@ -46,7 +46,7 @@ func TestPingPong(t *testing.T) {
 		for {
 			select {
 			case err := <-errc:
-				fmt.Println("Pong Error:", err)
+				fmt.Println("Listen Error:", err)
 			case <-ctx.Done():
 				return
 			}
@@ -54,7 +54,7 @@ func TestPingPong(t *testing.T) {
 	}(errChan)
 
 	errChan = make(chan error)
-	go testMulticast.Ping(ctx, payload, errChan)
+	go testMulticast.Send(ctx, payload, errChan)
 
 	// Print ping error
 	go func(errc chan error) {
@@ -64,7 +64,7 @@ func TestPingPong(t *testing.T) {
 			case err := <-errc:
 				// fmt.Println()
 				// t.Error(err)
-				fmt.Println("Ping Error:", err)
+				fmt.Println("Send Error:", err)
 			case <-ctx.Done():
 				return
 			}

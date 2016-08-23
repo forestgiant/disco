@@ -44,7 +44,7 @@ func Equal(a, b *Node) bool {
 	return true
 }
 
-// Listen enables the node to listen for other Pings from multicast sends
+// Listen for multicast sends
 func Listen(ctx context.Context, multicastAddress string, results chan<- *Node) error {
 	// Start monitoring for multicast
 	if multicastAddress == "" {
@@ -59,7 +59,7 @@ func Listen(ctx context.Context, multicastAddress string, results chan<- *Node) 
 	respChan := make(chan multicast.Response)
 	errChan := make(chan error)
 
-	go m.Pong(ctx, respChan, errChan)
+	go m.Listen(ctx, respChan, errChan)
 
 	go func() {
 		for {
@@ -130,7 +130,7 @@ func (n *Node) Multicast(ctx context.Context, multicastAddress string) error {
 		return err
 	}
 
-	go m.Ping(ctx, buf.Bytes(), n.ErrChan)
+	go m.Send(ctx, buf.Bytes(), n.ErrChan)
 
 	return nil
 }

@@ -28,8 +28,8 @@ type Response struct {
 // ErrNoIPv6 error if no IPv6 interfaces were found
 var ErrNoIPv6 = errors.New("Couldn't find any IPv6 network intefaces")
 
-// Ping out to try to find others listening
-func (m *Multicast) Ping(ctx context.Context, payload []byte, errc chan<- error) {
+// Send out to try to find others listening
+func (m *Multicast) Send(ctx context.Context, payload []byte, errc chan<- error) {
 	gaddr, err := net.ResolveUDPAddr("udp6", m.Address)
 	if err != nil {
 		errc <- err
@@ -117,8 +117,8 @@ func (m *Multicast) Ping(ctx context.Context, payload []byte, errc chan<- error)
 	}
 }
 
-// Pong when a multicast is received we serve it
-func (m *Multicast) Pong(ctx context.Context, respChan chan<- Response, errc chan<- error) {
+// Listen when a multicast is received we serve it
+func (m *Multicast) Listen(ctx context.Context, respChan chan<- Response, errc chan<- error) {
 	gaddr, err := net.ResolveUDPAddr("udp6", m.Address)
 	conn, err := net.ListenPacket("udp6", m.Address)
 	if err != nil {
