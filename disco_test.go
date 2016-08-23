@@ -1,105 +1,69 @@
 package disco
 
 import (
+	"context"
 	"fmt"
-	"os"
+	"sync"
 	"testing"
 
 	"gitlab.fg/go/disco/node"
 )
 
-var d *Disco
-
 const testMulticastAddress = "[ff12::9000]:21090"
 
-func TestMain(m *testing.M) {
-	var err error
-	d, err = NewDisco()
+func TestRegister(t *testing.T) {
+	ctx, cancelFunc := context.WithCancel(context.Background())
+	defer cancelFunc() // stop disco
+	d, err := NewDisco(testMulticastAddress)
 	if err != nil {
-		fmt.Println("NewDisco errored")
-		os.Exit(1)
+		t.Fatal(err)
 	}
 
-	// Run all test
-	t := m.Run()
-
-	os.Exit(t)
-}
-
-func TestRegister(t *testing.T) {
 	n := new(node.Node)
-	n.MulticastAddress = testMulticastAddress
 	n.IPv4Address = "127.0.0.1"
 
-	waitChan := make(chan struct{})
-
-	go func() {
-		d.Register(n)
-
-		nodes := d.GetRegistered()
-		r := nodes[0]
-
-		if r.MulticastAddress != n.MulticastAddress {
-			t.Errorf("TestRegister: MulticastAddress not equal. Received: %s, Should be: %s \n",
-				r.MulticastAddress, n.MulticastAddress)
-		}
-
-		close(waitChan)
-	}()
-
-	// Wait till register is complete
-	<-waitChan
-
-	waitChan = make(chan struct{})
-	// Now let's Deregister the node
-	go func() {
-		d.Deregister(n)
-		nodes := d.GetRegistered()
-		if len(nodes) != 0 {
-			t.Errorf("TestDeregister: All nodes should be deregistered. Received: %b, Should be: %b \n",
-				len(nodes), 0)
-		}
-
-		close(waitChan)
-	}()
-
-	// Wait till deregister is complete
-	<-waitChan
+	d.Register(ctx, n)
+	d.Deregister(n)
+	nodes := d.GetRegistered()
+	if len(nodes) != 0 {
+		t.Errorf("TestDeregister: All nodes should be deregistered. Received: %b, Should be: %b \n",
+			len(nodes), 0)
+	}
 }
 
 func TestDiscover(t *testing.T) {
+	ctx, cancelFunc := context.WithCancel(context.Background())
+	defer cancelFunc() // stop disco
+	d, err := NewDisco(testMulticastAddress)
+	if err != nil {
+		t.Fatal(err)
+	}
+
 	// Make sure we have a node registered for testing
-	n := &node.Node{
-		MulticastAddress: testMulticastAddress,
-		IPv4Address:      "9.0.0.1",
+	n1 := &node.Node{
+		// MulticastAddress: testMulticastAddress,
+		IPv4Address: "9.0.0.1",
 	}
-	d.Register(n)
+	d.Register(ctx, n1)
 
-	n = &node.Node{
-		MulticastAddress: testMulticastAddress,
-		IPv4Address:      "8.8.0.1",
+	n2 := &node.Node{
+		// MulticastAddress: testMulticastAddress,
+		IPv4Address: "8.8.0.1",
 	}
-	d.Register(n)
-	waitChan := make(chan struct{})
-
-	discoveredChan := d.Discover()
-
+	d.Register(ctx, n2)
+	discoveredChan := d.Discover(ctx)
+	wg := &sync.WaitGroup{}
+	wg.Add(1)
 	go func() {
+		defer wg.Done()
 		for {
 			select {
 			case n := <-discoveredChan:
 				fmt.Println("Found a node!!!!", n)
-				// close(waitChan)
-				// case err := <-errChan:
-				// 	fmt.Println("Error!", err)
+				return
 			}
 		}
 	}()
 
-	<-waitChan
-}
-
-func TestStop(t *testing.T) {
-	// Stop everything!
-	d.Stop()
+	wg.Wait()
 }

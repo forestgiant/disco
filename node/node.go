@@ -2,9 +2,9 @@ package node
 
 import (
 	"bytes"
+	"context"
 	"encoding/gob"
 	"errors"
-	"fmt"
 	"net"
 
 	"gitlab.fg/go/disco/multicast"
@@ -21,16 +21,14 @@ import (
 
 // Node represents a machine registered with Disco
 type Node struct {
-	IPv6Address      string
-	IPv4Address      string
-	SrcIP            net.IP
-	MulticastAddress string
-	ErrChan          chan error
-	shutdownChan     chan struct{}
-	// Action           int
-	multicast *multicast.Multicast
+	IPv6Address  string
+	IPv4Address  string
+	SrcIP        net.IP
+	ErrChan      chan error
+	shutdownChan chan struct{}
+	multicast    *multicast.Multicast
 
-	RespondLocalPing bool // Used for testing
+	// RespondLocalPing bool // Used for testing
 }
 
 // Equal compares nodes
@@ -43,15 +41,49 @@ func Equal(a, b *Node) bool {
 		return false
 	}
 
-	if a.MulticastAddress != b.MulticastAddress {
-		return false
+	return true
+}
+
+// Listen enables the node to listen for other Pings from multicast sends
+func Listen(ctx context.Context, multicastAddress string, results chan<- *Node) error {
+	// Start monitoring for multicast
+	if multicastAddress == "" {
+		return errors.New("must have multicast address")
 	}
 
-	// if a.SrcIP.String() != b.SrcIP.String() {
-	// 	return false
-	// }
+	m := &multicast.Multicast{
+		Address: multicastAddress,
+		Delay:   3,
+	}
 
-	return true
+	respChan := make(chan multicast.Response)
+	errChan := make(chan error)
+
+	go m.Pong(ctx, respChan, errChan)
+
+	go func() {
+		for {
+			select {
+			case resp := <-respChan:
+				buffer := bytes.NewBuffer(resp.Payload)
+				rn := new(Node)
+				dec := gob.NewDecoder(buffer)
+				err := dec.Decode(rn)
+				if err != nil {
+					errChan <- err
+				}
+
+				// Set the source address
+				rn.SrcIP = resp.SrcIP
+				results <- rn
+			case <-ctx.Done():
+				return
+			}
+
+		}
+	}()
+
+	return nil
 }
 
 // GobEncode gob interface
@@ -68,11 +100,6 @@ func (n *Node) GobEncode() ([]byte, error) {
 		return nil, err
 	}
 
-	err = encoder.Encode(n.MulticastAddress)
-	if err != nil {
-		return nil, err
-	}
-
 	return w.Bytes(), nil
 }
 
@@ -84,80 +111,15 @@ func (n *Node) GobDecode(buf []byte) error {
 	if err != nil {
 		return err
 	}
-	err = decoder.Decode(&n.IPv6Address)
-	if err != nil {
-		return err
-	}
-	return decoder.Decode(&n.MulticastAddress)
-}
 
-// Listen enables the node to listen for other Pings from multicast sends
-func (n *Node) Listen(results chan<- *Node) error {
-	// Start monitoring for multicast
-	if n.MulticastAddress == "" {
-		return errors.New("must have multicast address")
-	}
-
-	// m := multicast.NewMulticast(n.MulticastAddress)
-	m := &multicast.Multicast{
-		Address:      n.MulticastAddress,
-		Retries:      3,
-		Timeout:      3,
-		StopPingChan: make(chan struct{}),
-		StopPongChan: make(chan struct{}),
-	}
-	n.multicast = m
-
-	n.shutdownChan = make(chan struct{})
-
-	respChan := make(chan multicast.Response)
-
-	go n.multicast.Pong(respChan, n.ErrChan)
-
-	go func() {
-		for {
-			select {
-			case resp := <-respChan:
-				// fmt.Println("Received Ping from:", resp.SrcIP, "they said:", string(resp.Payload))
-
-				buffer := bytes.NewBuffer(resp.Payload)
-				rn := new(Node)
-				dec := gob.NewDecoder(buffer)
-				err := dec.Decode(rn)
-				if err != nil {
-					// fmt.Println("Node callback error:", err)
-					n.ErrChan <- err
-				}
-
-				fmt.Println("is node coorect", rn)
-
-				// Set the source address
-				rn.SrcIP = resp.SrcIP
-
-				// Only proceed if the received node (rn) isn't equal to the node listening (n)
-				if Equal(n, rn) {
-					continue
-				}
-
-				results <- rn
-				// callback(rn)
-				// if err := callback(rn); err == nil {
-				// 	return
-				// }
-			case <-n.shutdownChan:
-				return
-			}
-
-		}
-	}()
-
-	return nil
+	return decoder.Decode(&n.IPv6Address)
 }
 
 // Multicast start the mulicast ping
-func (n *Node) Multicast() error {
-	if n.multicast == nil {
-		return errors.New("No multicast created for node.")
+func (n *Node) Multicast(ctx context.Context, multicastAddress string) error {
+	m := &multicast.Multicast{
+		Address: multicastAddress,
+		Delay:   3,
 	}
 
 	// Encode node to be sent via multicast
@@ -168,42 +130,10 @@ func (n *Node) Multicast() error {
 		return err
 	}
 
-	go n.multicast.Ping(buf.Bytes(), n.ErrChan)
+	go m.Ping(ctx, buf.Bytes(), n.ErrChan)
 
 	return nil
 }
-
-// StopMulticast stops the node from pinging
-func (n *Node) StopMulticast() error {
-	if n.multicast == nil {
-		return errors.New("No multicast created for node.")
-	}
-
-	n.multicast.StopPing()
-
-	return nil
-}
-
-// Shutdown stops the serving of multicast pings
-func (n *Node) Shutdown() error {
-	if n.multicast == nil {
-		return errors.New("No multicast created for node.")
-	}
-
-	close(n.shutdownChan)
-	n.multicast.StopPong()
-	n.multicast.StopPing()
-
-	return nil
-	// fmt.Println("shutdown the ping pong!")
-}
-
-// Notify pings other nodes using multicast to let them know it's here
-// func (n *Node) Notify() {
-// 	m := multicast.NewMulticast(n.MulticastAddress)
-// 	n.multicast = m
-// 	go n.multicast.Ping()
-// }
 
 // func (n *Node) callback(listenCallback ListenCallback) multicast.PongCallback {
 // 	return func(payload []byte, srcIP net.IP) error {
