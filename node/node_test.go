@@ -1,10 +1,15 @@
 package node
 
 import (
+	"bytes"
 	"context"
-	"fmt"
+	"encoding/gob"
+	"errors"
 	"sync"
 	"testing"
+	"time"
+
+	"gitlab.fg/go/disco/multicast"
 )
 
 const testMulticastAddress = "[ff12::9000]:21090"
@@ -30,57 +35,92 @@ func TestEqual(t *testing.T) {
 	}
 }
 
-func TestStartPong(t *testing.T) {
-	// Setup two test nodes that wait to listen for the others
-	// If one hear the other it decrements the WaitGroup
-	n1 := &Node{
-		IPv4Address: "127.0.0.1",
-		ErrChan:     make(chan error),
+func TestMulticast(t *testing.T) {
+	var tests = []struct {
+		n         *Node
+		timeout   time.Duration
+		shouldErr bool
+	}{
+		{&Node{}, 0, true},
+		{&Node{IPv4Address: "127.0.0.1"}, 0, true},
+		{&Node{IPv6Address: "fe80::aebc:32ff:fe93:4365"}, 0, true},
+		{&Node{IPv6Address: "fe80::aebc:32ff:fe93:4365"}, 0, true},
+		{&Node{
+			IPv4Address: "127.0.0.1",
+			ErrChan:     make(chan error),
+			StopCh:      make(chan struct{}),
+		}, 0, false},
+		{&Node{
+			IPv4Address: "127.0.0.2",
+			ErrChan:     make(chan error),
+			StopCh:      make(chan struct{}),
+		}, 0, false},
 	}
 
-	// create a second test node
-	n2 := &Node{
-		IPv4Address: "9.0.0.1",
-		ErrChan:     make(chan error),
-	}
-
-	wg := new(sync.WaitGroup)
-	results := make(chan *Node)
+	results := make(chan multicast.Response)
 	ctx, cancelFunc := context.WithCancel(context.Background())
-	Listen(ctx, testMulticastAddress, results)
-	wg.Add(2)
+	errChan := make(chan error, 1)
+	wg := &sync.WaitGroup{}
+	var checkNodes []*Node
 
+	// Listen for nodes
+	go multicast.Listen(ctx, testMulticastAddress, results, errChan)
 	go func() {
-		// Select will block until a result comes in
 		for {
 			select {
-			case rn := <-results:
-				fmt.Println("node2 received a ping from", rn)
-				// listen for n1
-				if Equal(rn, n1) {
-					fmt.Println("Found n1!!!", n1)
-					wg.Done()
+			case resp := <-results:
+				buffer := bytes.NewBuffer(resp.Payload)
+				rn := &Node{}
+				dec := gob.NewDecoder(buffer)
+				err := dec.Decode(rn)
+				if err != nil {
+					errChan <- err
 				}
 
-				if Equal(rn, n2) {
-					fmt.Println("Found n2!!!", n2)
-					wg.Done()
+				// Check if any nodes coming in are the ones we are waiting for
+				for _, n := range checkNodes {
+					if Equal(rn, n) {
+						n.Stop() // stop the node from multicasting
+						wg.Done()
+					}
 				}
+			case <-time.After(100 * time.Millisecond):
+				errChan <- errors.New("TestMulticast timed out")
 			case <-ctx.Done():
 				return
 			}
 		}
 	}()
 
-	// Now ping both listening nodes
-	// Encode node to be sent via multicast
-	if err := n1.Multicast(ctx, testMulticastAddress); err != nil {
-		t.Fatal("n1 ping error", err)
-	}
-	if err := n2.Multicast(ctx, testMulticastAddress); err != nil {
-		t.Fatal("n2 ping error", err)
-	}
+	// Perform our test in a new goroutine so we don't block
+	go func() {
+		for _, test := range tests {
+			// Add to the WaitGroup for each test that should pass and add it to the nodes to verify
+			if !test.shouldErr {
+				wg.Add(1)
+				checkNodes = append(checkNodes, test.n)
 
-	wg.Wait()
-	cancelFunc()
+				if err := test.n.Multicast(ctx, testMulticastAddress); err != nil {
+					t.Fatal("Multicast error", err)
+				}
+			} else {
+				if err := test.n.Multicast(ctx, testMulticastAddress); err == nil {
+					t.Fatal("Multicast of node should fail", err)
+				}
+			}
+		}
+
+		wg.Wait()
+		cancelFunc()
+	}()
+
+	// Block until the ctx is canceled or we receive an error, such as a timeout
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case err := <-errChan:
+			t.Fatal(err)
+		}
+	}
 }

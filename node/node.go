@@ -21,12 +21,11 @@ import (
 
 // Node represents a machine registered with Disco
 type Node struct {
-	IPv6Address  string
-	IPv4Address  string
-	SrcIP        net.IP
-	ErrChan      chan error
-	shutdownChan chan struct{}
-	multicast    *multicast.Multicast
+	IPv6Address string
+	IPv4Address string
+	SrcIP       net.IP
+	ErrChan     chan error
+	StopCh      chan struct{}
 
 	// RespondLocalPing bool // Used for testing
 }
@@ -42,48 +41,6 @@ func Equal(a, b *Node) bool {
 	}
 
 	return true
-}
-
-// Listen for multicast sends
-func Listen(ctx context.Context, multicastAddress string, results chan<- *Node) error {
-	// Start monitoring for multicast
-	if multicastAddress == "" {
-		return errors.New("must have multicast address")
-	}
-
-	m := &multicast.Multicast{
-		Address: multicastAddress,
-		Delay:   3,
-	}
-
-	respChan := make(chan multicast.Response)
-	errChan := make(chan error)
-
-	go m.Listen(ctx, respChan, errChan)
-
-	go func() {
-		for {
-			select {
-			case resp := <-respChan:
-				buffer := bytes.NewBuffer(resp.Payload)
-				rn := new(Node)
-				dec := gob.NewDecoder(buffer)
-				err := dec.Decode(rn)
-				if err != nil {
-					errChan <- err
-				}
-
-				// Set the source address
-				rn.SrcIP = resp.SrcIP
-				results <- rn
-			case <-ctx.Done():
-				return
-			}
-
-		}
-	}()
-
-	return nil
 }
 
 // GobEncode gob interface
@@ -117,9 +74,8 @@ func (n *Node) GobDecode(buf []byte) error {
 
 // Multicast start the mulicast ping
 func (n *Node) Multicast(ctx context.Context, multicastAddress string) error {
-	m := &multicast.Multicast{
-		Address: multicastAddress,
-		Delay:   3,
+	if n.StopCh == nil {
+		return errors.New("StopCh not set for node")
 	}
 
 	// Encode node to be sent via multicast
@@ -130,9 +86,14 @@ func (n *Node) Multicast(ctx context.Context, multicastAddress string) error {
 		return err
 	}
 
-	go m.Send(ctx, buf.Bytes(), n.ErrChan)
+	go multicast.Send(ctx, n.StopCh, multicastAddress, 3, buf.Bytes(), n.ErrChan)
 
 	return nil
+}
+
+// Stop closes the StopCh to stop multicast sending
+func (n *Node) Stop() {
+	close(n.StopCh)
 }
 
 // func (n *Node) callback(listenCallback ListenCallback) multicast.PongCallback {
