@@ -2,7 +2,6 @@ package disco
 
 import (
 	"context"
-	"fmt"
 	"sync"
 	"testing"
 
@@ -32,38 +31,66 @@ func TestRegister(t *testing.T) {
 }
 
 func TestDiscover(t *testing.T) {
+	var tests = []struct {
+		n         *node.Node
+		shouldErr bool
+	}{
+		{&node.Node{IPv4Address: "9.0.0.1"}, false},
+		{&node.Node{IPv4Address: "8.8.0.1"}, false},
+	}
+
 	ctx, cancelFunc := context.WithCancel(context.Background())
 	defer cancelFunc() // stop disco
+	wg := &sync.WaitGroup{}
 	d, err := NewDisco(testMulticastAddress)
 	if err != nil {
 		t.Fatal(err)
 	}
+	var checkNodes []*node.Node
+	var mu sync.Mutex
+	discoveredChan, errChan := d.Discover(ctx)
 
-	// Make sure we have a node registered for testing
-	n1 := &node.Node{
-		// MulticastAddress: testMulticastAddress,
-		IPv4Address: "9.0.0.1",
-	}
-	d.Register(ctx, n1)
-
-	n2 := &node.Node{
-		// MulticastAddress: testMulticastAddress,
-		IPv4Address: "8.8.0.1",
-	}
-	d.Register(ctx, n2)
-	discoveredChan := d.Discover(ctx)
-	wg := &sync.WaitGroup{}
-	wg.Add(1)
 	go func() {
-		defer wg.Done()
+		// Select will block until a result comes in
 		for {
 			select {
-			case n := <-discoveredChan:
-				fmt.Println("Found a node!!!!", n)
+			case rn := <-discoveredChan:
+				mu.Lock()
+				for _, n := range checkNodes {
+					if node.Equal(rn, n) {
+						n.Stop() // stop the node from multicasting
+						wg.Done()
+					}
+				}
+				mu.Unlock()
+
+			case err := <-errChan:
+				t.Fatal(err)
+			case <-ctx.Done():
 				return
 			}
 		}
 	}()
+
+	// Discover nodes
+	for _, test := range tests {
+		// Add to the WaitGroup for each test that should pass and add it to the nodes to verify
+		if !test.shouldErr {
+			wg.Add(1)
+			mu.Lock()
+			checkNodes = append(checkNodes, test.n)
+			mu.Unlock()
+
+			if err := test.n.Multicast(ctx, testMulticastAddress); err != nil {
+				t.Fatal("Multicast error", err)
+			}
+		} else {
+			if err := test.n.Multicast(ctx, testMulticastAddress); err == nil {
+				t.Fatal("Multicast of node should fail", err)
+			}
+		}
+
+	}
 
 	wg.Wait()
 }

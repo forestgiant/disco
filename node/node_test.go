@@ -38,33 +38,30 @@ func TestEqual(t *testing.T) {
 func TestMulticast(t *testing.T) {
 	var tests = []struct {
 		n         *Node
-		timeout   time.Duration
 		shouldErr bool
 	}{
-		{&Node{}, 0, true},
-		{&Node{IPv4Address: "127.0.0.1"}, 0, true},
-		{&Node{IPv6Address: "fe80::aebc:32ff:fe93:4365"}, 0, true},
-		{&Node{IPv6Address: "fe80::aebc:32ff:fe93:4365"}, 0, true},
-		{&Node{
-			IPv4Address: "127.0.0.1",
-			ErrChan:     make(chan error),
-			StopCh:      make(chan struct{}),
-		}, 0, false},
-		{&Node{
-			IPv4Address: "127.0.0.2",
-			ErrChan:     make(chan error),
-			StopCh:      make(chan struct{}),
-		}, 0, false},
+		{&Node{}, true},
+		{&Node{IPv4Address: "127.0.0.1"}, false},
+		{&Node{IPv4Address: "127.0.0.2"}, false},
+		{&Node{IPv6Address: "fe80::aebc:32ff:fe93:4365"}, false},
 	}
 
-	results := make(chan multicast.Response)
+	// results := make(chan multicast.Response)
 	ctx, cancelFunc := context.WithCancel(context.Background())
 	errChan := make(chan error, 1)
 	wg := &sync.WaitGroup{}
+	var mu sync.Mutex
 	var checkNodes []*Node
 
 	// Listen for nodes
-	go multicast.Listen(ctx, testMulticastAddress, results, errChan)
+	listener := &multicast.Multicast{
+		Address: testMulticastAddress,
+		Delay:   3,
+	}
+	results, err := listener.Listen(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
 	go func() {
 		for {
 			select {
@@ -78,12 +75,14 @@ func TestMulticast(t *testing.T) {
 				}
 
 				// Check if any nodes coming in are the ones we are waiting for
+				mu.Lock()
 				for _, n := range checkNodes {
 					if Equal(rn, n) {
 						n.Stop() // stop the node from multicasting
 						wg.Done()
 					}
 				}
+				mu.Unlock()
 			case <-time.After(100 * time.Millisecond):
 				errChan <- errors.New("TestMulticast timed out")
 			case <-ctx.Done():
@@ -98,7 +97,9 @@ func TestMulticast(t *testing.T) {
 			// Add to the WaitGroup for each test that should pass and add it to the nodes to verify
 			if !test.shouldErr {
 				wg.Add(1)
+				mu.Lock()
 				checkNodes = append(checkNodes, test.n)
+				mu.Unlock()
 
 				if err := test.n.Multicast(ctx, testMulticastAddress); err != nil {
 					t.Fatal("Multicast error", err)

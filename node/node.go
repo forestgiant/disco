@@ -24,8 +24,7 @@ type Node struct {
 	IPv6Address string
 	IPv4Address string
 	SrcIP       net.IP
-	ErrChan     chan error
-	StopCh      chan struct{}
+	mc          *multicast.Multicast
 
 	// RespondLocalPing bool // Used for testing
 }
@@ -74,8 +73,8 @@ func (n *Node) GobDecode(buf []byte) error {
 
 // Multicast start the mulicast ping
 func (n *Node) Multicast(ctx context.Context, multicastAddress string) error {
-	if n.StopCh == nil {
-		return errors.New("StopCh not set for node")
+	if n.IPv4Address == "" && n.IPv6Address == "" {
+		return errors.New("IPv6 or IPv4 address needs to be set")
 	}
 
 	// Encode node to be sent via multicast
@@ -86,14 +85,20 @@ func (n *Node) Multicast(ctx context.Context, multicastAddress string) error {
 		return err
 	}
 
-	go multicast.Send(ctx, n.StopCh, multicastAddress, 3, buf.Bytes(), n.ErrChan)
+	n.mc = &multicast.Multicast{
+		Address: multicastAddress,
+		Delay:   3,
+	}
+	if err := n.mc.Send(ctx, buf.Bytes()); err != nil {
+		return err
+	}
 
 	return nil
 }
 
 // Stop closes the StopCh to stop multicast sending
 func (n *Node) Stop() {
-	close(n.StopCh)
+	n.mc.Stop()
 }
 
 // func (n *Node) callback(listenCallback ListenCallback) multicast.PongCallback {

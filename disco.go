@@ -1,9 +1,12 @@
 package disco
 
 import (
+	"bytes"
 	"context"
+	"encoding/gob"
 	"sync"
 
+	"gitlab.fg/go/disco/multicast"
 	"gitlab.fg/go/disco/node"
 )
 
@@ -26,14 +29,18 @@ func NewDisco(multicastAddress string) (*Disco, error) {
 }
 
 // Register takes a node and registers it to be discovered
-func (d *Disco) Register(ctx context.Context, n *node.Node) {
+func (d *Disco) Register(ctx context.Context, n *node.Node) error {
 	// d.mu.Lock()
 	// defer d.mu.Unlock()
 	// set multicast address for node
 	// n.MulticastAddress = d.multicastAddress
-	n.Multicast(ctx, d.multicastAddress)
 
-	// d.registered = append(d.registered, n)
+	if err := n.Multicast(ctx, d.multicastAddress); err != nil {
+		return err
+	}
+
+	d.registered = append(d.registered, n)
+	return nil
 }
 
 // Deregister takes a node and deregisters it
@@ -58,15 +65,55 @@ func (d *Disco) GetRegistered() []*node.Node {
 }
 
 // Discover uses multicast to find all other nodes that are registered
-func (d *Disco) Discover(ctx context.Context) (nodes <-chan *node.Node) {
-	// Start sending pings from all the nodes registered
-	// registeredNodes := d.GetRegistered()
-	// for _, n := range registeredNodes {
-	// 	fmt.Println("Start multicast for", n)
-	// 	go n.Multicast()
-	// }
-	// Now that it's registered listen
-	node.Listen(ctx, d.multicastAddress, d.discoveredChan)
+// func (d *Disco) Discover(ctx context.Context) (nodes <-chan *node.Node) {
+// 	// Start sending pings from all the nodes registered
+// 	// registeredNodes := d.GetRegistered()
+// 	// for _, n := range registeredNodes {
+// 	// 	fmt.Println("Start multicast for", n)
+// 	// 	go n.Multicast()
+// 	// }
+// 	// Now that it's registered listen
+// 	node.Listen(ctx, d.multicastAddress, d.discoveredChan)
 
-	return d.discoveredChan
+// 	return d.discoveredChan
+// }
+
+// Discover listens for multicast sends
+func (d *Disco) Discover(ctx context.Context) (nodes <-chan *node.Node, errors <-chan error) {
+	// respChan := make(chan multicast.Response)
+	errChan := make(chan error)
+	results := make(chan *node.Node)
+
+	m := &multicast.Multicast{
+		Address: d.multicastAddress,
+		Delay:   3,
+	}
+	respChan, err := m.Listen(ctx)
+	if err != nil {
+		errChan <- err
+	}
+
+	go func() {
+		for {
+			select {
+			case resp := <-respChan:
+				buffer := bytes.NewBuffer(resp.Payload)
+				rn := &node.Node{}
+				dec := gob.NewDecoder(buffer)
+				err := dec.Decode(rn)
+				if err != nil {
+					errChan <- err
+				}
+
+				// Set the source address
+				rn.SrcIP = resp.SrcIP
+				results <- rn
+			case <-ctx.Done():
+				return
+			}
+
+		}
+	}()
+
+	return results, errChan
 }
