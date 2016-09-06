@@ -15,9 +15,8 @@ import (
 // Multicast struct
 type Multicast struct {
 	Address string
-	Delay   time.Duration
 	done    chan struct{}
-	err     error
+	sendErr error
 	mu      sync.Mutex // protect done and closed
 	closed  bool
 }
@@ -48,13 +47,13 @@ func (m *Multicast) Done() <-chan struct{} {
 	return m.done
 }
 
-// Err returns a channel for errors
-func (m *Multicast) Err() error {
-	return m.err
+// SendErr returns any send errors
+func (m *Multicast) SendErr() error {
+	return m.sendErr
 }
 
 // Send out to try to find others listening
-func (m *Multicast) Send(ctx context.Context, payload []byte) error {
+func (m *Multicast) Send(ctx context.Context, delay time.Duration, payload []byte) error {
 	if m.Address == "" {
 		return errors.New("Address needs to be set")
 	}
@@ -120,7 +119,7 @@ func (m *Multicast) Send(ctx context.Context, payload []byte) error {
 
 		if success <= 0 {
 			// stop the multicast if there was an error and set the error
-			m.err = ErrNoIPv6
+			m.sendErr = ErrNoIPv6
 			m.Stop()
 			return
 		}
@@ -129,7 +128,7 @@ func (m *Multicast) Send(ctx context.Context, payload []byte) error {
 	go func() {
 		for {
 			select {
-			case <-time.After(time.Second * m.Delay):
+			case <-time.After(time.Second * delay):
 				send()
 			case <-ctx.Done():
 				fmt.Println("send done!!")
@@ -156,6 +155,7 @@ func (m *Multicast) Stop() {
 		return
 	}
 
+	m.sendErr = nil // reset any send errors after we stop
 	close(m.done)
 	m.closed = true
 }

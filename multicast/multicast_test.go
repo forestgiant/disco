@@ -15,22 +15,14 @@ func TestSendAndListen(t *testing.T) {
 
 	var tests = []struct {
 		m         *Multicast
+		delay     time.Duration
 		payload   []byte
 		shouldErr bool
 	}{
-		{&Multicast{}, nil, true},
-		{&Multicast{
-			Address: testMulticastAddress,
-			Delay:   3,
-		}, []byte("Hello World"), false},
-		{&Multicast{
-			Address: testMulticastAddress,
-			Delay:   0,
-		}, []byte("Say hello again"), false},
-		{&Multicast{
-			Address: testMulticastAddress,
-			Delay:   1,
-		}, []byte("123412341234"), false},
+		{&Multicast{}, 0, nil, true},
+		{&Multicast{Address: testMulticastAddress}, 3, []byte("Hello World"), false},
+		{&Multicast{Address: testMulticastAddress}, 0, []byte("Say hello again"), false},
+		{&Multicast{Address: testMulticastAddress}, 1, []byte("123412341234"), false},
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -39,58 +31,65 @@ func TestSendAndListen(t *testing.T) {
 
 	// Don't block for test
 	go func() {
+		listener := &Multicast{Address: testMulticastAddress}
+
+		// Create a listener
+		respCh, err := listener.Listen(ctx)
+		if err != nil {
+			sendErrors <- err
+		}
+
+		// For each test we're going to check if the resp sent over the response
+		// channel matches the test's payload
+		go func() {
+			defer wg.Done()
+
+			for {
+				select {
+				case resp := <-respCh:
+					// Check the slice of test to see if the response equals what is expected
+					for _, test := range tests {
+						if bytes.Equal(resp.Payload, test.payload) {
+							fmt.Printf("test %s. resp %s \n", string(test.payload), string(resp.Payload))
+							test.m.Stop()
+						}
+					}
+				case <-ctx.Done():
+					return
+				case <-listener.Done():
+					return
+				}
+			}
+		}()
+
 		for _, test := range tests {
 			if !test.shouldErr {
 				wg.Add(1)
 
-				// Each multicast test will create a listener
-				respCh, err := test.m.Listen(ctx)
-				if err != nil {
-					sendErrors <- err
-				}
-
-				// For each test we're going to check if the resp sent over the response
-				// channel matches the test's payload
-				go func(test struct {
-					m         *Multicast
-					payload   []byte
-					shouldErr bool
-				}) {
-					defer wg.Done()
-
-					for {
-						select {
-						case resp := <-respCh:
-							if bytes.Equal(resp.Payload, test.payload) {
-								fmt.Printf("test %s. resp %s \n",
-									string(test.payload), string(resp.Payload))
-
-								test.m.Stop()
-							}
-						case <-ctx.Done():
-							return
-						case <-test.m.Done():
-							// If the test.m is done check to see if it errored
-							if test.m.Err() != nil {
-								sendErrors <- test.m.Err()
-							}
-							return
-						case <-time.After(100 * time.Millisecond):
-							sendErrors <- errors.New("TestSendAndListen timed out")
-							return
-						}
-					}
-				}(test)
-
-				if err := test.m.Send(ctx, test.payload); err != nil {
+				if err := test.m.Send(ctx, test.delay, test.payload); err != nil {
 					t.Fatal("Multicast Send should fail", err)
 				}
 
 			} else {
-				if err := test.m.Send(ctx, test.payload); err == nil {
+				if err := test.m.Send(ctx, test.delay, test.payload); err == nil {
 					t.Fatal("Multicast Send should fail", err)
 				}
 			}
+
+			// Check for any send errors
+			go func(test struct {
+				m         *Multicast
+				delay     time.Duration
+				payload   []byte
+				shouldErr bool
+			}) {
+				select { // Check to see if it errored
+				case <-test.m.Done():
+					if test.m.SendErr() != nil {
+						sendErrors <- test.m.SendErr()
+					}
+				}
+			}(test)
 		}
 
 		wg.Wait() // Block until all test multicasts are stopped
@@ -107,6 +106,9 @@ func TestSendAndListen(t *testing.T) {
 				t.Fatal("err during Send()", err)
 			}
 			return
+		case <-time.After(100 * time.Millisecond):
+			sendErrors <- errors.New("TestSendAndListen timed out")
+			return
 		}
 	}
 }
@@ -114,13 +116,10 @@ func TestSendAndListen(t *testing.T) {
 func TestStop(t *testing.T) {
 	testMulticastAddress := "[ff12::9000]:21090"
 
-	m := &Multicast{
-		Address: testMulticastAddress,
-		Delay:   3,
-	}
+	m := &Multicast{Address: testMulticastAddress}
 
 	payload := []byte("Hello World")
-	if err := m.Send(context.TODO(), payload); err != nil {
+	if err := m.Send(context.TODO(), 3, payload); err != nil {
 		t.Fatal("Send error", err)
 	}
 	time.AfterFunc(100*time.Millisecond, func() { m.Stop() })
@@ -131,8 +130,8 @@ func TestStop(t *testing.T) {
 		select {
 		case <-m.Done():
 			timeout.Stop() // cancel the timeout
-			if m.Err() != nil {
-				t.Fatal("m.Err():", m.Err())
+			if m.SendErr() != nil {
+				t.Fatal("m.Err():", m.SendErr())
 			}
 			return
 		}
@@ -142,14 +141,11 @@ func TestStop(t *testing.T) {
 func TestCtxCancelFunc(t *testing.T) {
 	testMulticastAddress := "[ff12::9000]:21090"
 
-	m := &Multicast{
-		Address: testMulticastAddress,
-		Delay:   3,
-	}
+	m := &Multicast{Address: testMulticastAddress}
 
 	payload := []byte("Hello World")
 	ctx, cancel := context.WithCancel(context.Background())
-	if err := m.Send(ctx, payload); err != nil {
+	if err := m.Send(ctx, 3, payload); err != nil {
 		t.Fatal("Send error", err)
 	}
 	time.AfterFunc(100*time.Millisecond, func() { cancel() })
