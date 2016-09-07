@@ -85,11 +85,8 @@ func (n *Node) Multicast(ctx context.Context, multicastAddress string) error {
 		return err
 	}
 
-	n.mc = &multicast.Multicast{
-		Address: multicastAddress,
-		Delay:   3,
-	}
-	if err := n.mc.Send(ctx, buf.Bytes()); err != nil {
+	n.mc = &multicast.Multicast{Address: multicastAddress}
+	if err := n.mc.Send(ctx, 3, buf.Bytes()); err != nil {
 		return err
 	}
 

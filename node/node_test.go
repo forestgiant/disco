@@ -54,10 +54,7 @@ func TestMulticast(t *testing.T) {
 	var checkNodes []*Node
 
 	// Listen for nodes
-	listener := &multicast.Multicast{
-		Address: testMulticastAddress,
-		Delay:   3,
-	}
+	listener := &multicast.Multicast{Address: testMulticastAddress}
 	results, err := listener.Listen(ctx)
 	if err != nil {
 		t.Fatal(err)

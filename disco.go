@@ -84,10 +84,7 @@ func (d *Disco) Discover(ctx context.Context) (nodes <-chan *node.Node, errors <
 	errChan := make(chan error)
 	results := make(chan *node.Node)
 
-	m := &multicast.Multicast{
-		Address: d.multicastAddress,
-		Delay:   3,
-	}
+	m := &multicast.Multicast{Address: d.multicastAddress}
 	respChan, err := m.Listen(ctx)
 	if err != nil {
 		errChan <- err
