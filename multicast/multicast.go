@@ -53,7 +53,7 @@ func (m *Multicast) SendErr() error {
 }
 
 // Send out to try to find others listening
-func (m *Multicast) Send(ctx context.Context, delay time.Duration, payload []byte) error {
+func (m *Multicast) Send(ctx context.Context, interval time.Duration, payload []byte) error {
 	if m.Address == "" {
 		return errors.New("Address needs to be set")
 	}
@@ -128,7 +128,7 @@ func (m *Multicast) Send(ctx context.Context, delay time.Duration, payload []byt
 	go func() {
 		for {
 			select {
-			case <-time.After(time.Second * delay):
+			case <-time.After(time.Second * interval):
 				send()
 			case <-ctx.Done():
 				fmt.Println("send done!!")
