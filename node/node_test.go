@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/gob"
 	"errors"
+	"fmt"
+	"net"
 	"sync"
 	"testing"
 	"time"
@@ -21,14 +23,12 @@ func TestEqual(t *testing.T) {
 		expected bool
 	}{
 		{&Node{}, &Node{}, true},
-		{&Node{IPv4Address: "127.0.0.1"}, &Node{IPv4Address: "127.0.0.1"}, true},
-		{&Node{IPv4Address: "127.0.0.1"}, &Node{IPv4Address: ""}, false},
-		{&Node{IPv6Address: "fe80::aebc:32ff:fe93:4365"}, &Node{IPv6Address: "fe80::aebc:32ff:fe93:4365"}, true},
-		{&Node{IPv6Address: "fe80::aebc:32ff:fe93:4365"}, &Node{IPv6Address: ""}, false},
+		{&Node{Values: map[string]string{"foo": "v1", "bar": "v2"}}, &Node{Values: map[string]string{"foo": "v1", "bar": "v2"}}, true},
+		{&Node{Values: map[string]string{"foo": "v1", "bar": "v2"}}, &Node{}, false},
 	}
 
 	for _, test := range tests {
-		actual := Equal(test.a, test.b)
+		actual := test.a.Equal(test.b)
 		if actual != test.expected {
 			t.Errorf("Compare failed %v should equal %v.", test.a, test.b)
 		}
@@ -37,21 +37,19 @@ func TestEqual(t *testing.T) {
 
 func TestMulticast(t *testing.T) {
 	var tests = []struct {
-		n         *Node
-		shouldErr bool
+		n                *Node
+		multicastAddress string
+		shouldErr        bool
 	}{
-		{&Node{}, true},
-		{&Node{IPv4Address: "127.0.0.1"}, false},
-		{&Node{IPv4Address: "127.0.0.2"}, false},
-		{&Node{IPv6Address: "fe80::aebc:32ff:fe93:4365"}, false},
+		{&Node{SendInterval: 1 * time.Second}, "[ff12::9000]:21090", false},
+		{&Node{Values: map[string]string{"foo": "v1", "bar": "v2"}, SendInterval: 1 * time.Second}, "[ff12::9000]:21090", false},
+		{&Node{Values: map[string]string{"someKey": "someValue"}, SendInterval: 1 * time.Second}, "[ff12::9000]:21090", false},
+		{&Node{Values: map[string]string{"anotherKey": "anotherValue"}, SendInterval: 1 * time.Second}, ":21090", true},
 	}
 
-	// results := make(chan multicast.Response)
 	ctx, cancelFunc := context.WithCancel(context.Background())
 	errChan := make(chan error, 1)
 	wg := &sync.WaitGroup{}
-	var mu sync.Mutex
-	var checkNodes []*Node
 
 	// Listen for nodes
 	listener := &multicast.Multicast{Address: testMulticastAddress}
@@ -59,6 +57,9 @@ func TestMulticast(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer listener.Stop()
+
+	// Check if nodes received are the nodes we are testing
 	go func() {
 		for {
 			select {
@@ -72,14 +73,12 @@ func TestMulticast(t *testing.T) {
 				}
 
 				// Check if any nodes coming in are the ones we are waiting for
-				mu.Lock()
-				for _, n := range checkNodes {
-					if Equal(rn, n) {
-						n.Stop() // stop the node from multicasting
+				for _, test := range tests {
+					if rn.Equal(test.n) {
+						test.n.Stop() // stop the node from multicasting
 						wg.Done()
 					}
 				}
-				mu.Unlock()
 			case <-time.After(100 * time.Millisecond):
 				errChan <- errors.New("TestMulticast timed out")
 			case <-ctx.Done():
@@ -94,21 +93,19 @@ func TestMulticast(t *testing.T) {
 			// Add to the WaitGroup for each test that should pass and add it to the nodes to verify
 			if !test.shouldErr {
 				wg.Add(1)
-				mu.Lock()
-				checkNodes = append(checkNodes, test.n)
-				mu.Unlock()
 
-				if err := test.n.Multicast(ctx, testMulticastAddress); err != nil {
+				if err := test.n.Multicast(ctx, test.multicastAddress); err != nil {
 					t.Fatal("Multicast error", err)
 				}
 			} else {
-				if err := test.n.Multicast(ctx, testMulticastAddress); err == nil {
+				if err := test.n.Multicast(ctx, test.multicastAddress); err == nil {
 					t.Fatal("Multicast of node should fail", err)
 				}
 			}
 		}
 
 		wg.Wait()
+		fmt.Println("stop waiting")
 		cancelFunc()
 	}()
 
@@ -119,6 +116,49 @@ func TestMulticast(t *testing.T) {
 			return
 		case err := <-errChan:
 			t.Fatal(err)
+		}
+	}
+}
+
+func TestStop(t *testing.T) {
+	n := &Node{Values: map[string]string{"foo": "v1", "bar": "v2"}}
+
+	if err := n.Multicast(context.TODO(), testMulticastAddress); err != nil {
+		t.Fatal("Multicast error", err)
+	}
+	time.AfterFunc(100*time.Millisecond, func() { n.Stop() })
+	timeout := time.AfterFunc(200*time.Millisecond, func() { t.Fatal("TestStopChan timedout") })
+
+	// Block until the stopCh is closed
+	for {
+		select {
+		case <-n.Done():
+			timeout.Stop() // cancel the timeout
+			return
+		}
+	}
+}
+
+func TestLocalIPv4(t *testing.T) {
+	l := localIPv4()
+	_, err := net.InterfaceAddrs()
+	if err != nil {
+		// if there was an error with the interface
+		// then it should be loopback
+		if !l.IsLoopback() {
+			t.Error("LocalIP should be loopback")
+		}
+	}
+}
+
+func TestLocalIPv6(t *testing.T) {
+	l := localIPv6()
+	_, err := net.InterfaceAddrs()
+	if err != nil {
+		// if there was an error with the interface
+		// then it should be loopback
+		if !l.IsLoopback() {
+			t.Error("LocalIP should be loopback")
 		}
 	}
 }
