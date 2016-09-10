@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/gob"
+	"errors"
+	"net"
 	"sync"
 
 	"gitlab.fg/go/disco/multicast"
@@ -21,6 +23,19 @@ type Disco struct {
 
 // NewDisco setups and creates a *Disco yo
 func NewDisco(multicastAddress string) (*Disco, error) {
+	if multicastAddress == "" {
+		return nil, errors.New("Address is blank")
+	}
+
+	ip, _, err := net.SplitHostPort(multicastAddress)
+	if err != nil {
+		return nil, err
+	}
+
+	if !net.ParseIP(ip).IsMulticast() {
+		return nil, errors.New("multicastAddress is not valid")
+	}
+
 	d := new(Disco)
 	d.multicastAddress = multicastAddress
 	d.discoveredChan = make(chan *node.Node)
@@ -53,6 +68,7 @@ func (d *Disco) Deregister(n *node.Node) {
 		if no == n {
 			// remove it from the slice
 			d.registered = append(d.registered[:i], d.registered[i+1:]...)
+			n.Stop() // Stop the node multicasting
 		}
 	}
 }
@@ -79,15 +95,15 @@ func (d *Disco) GetRegistered() []*node.Node {
 // }
 
 // Discover listens for multicast sends
-func (d *Disco) Discover(ctx context.Context) (nodes <-chan *node.Node, errors <-chan error) {
+func (d *Disco) Discover(ctx context.Context) (<-chan *node.Node, error) {
 	// respChan := make(chan multicast.Response)
-	errChan := make(chan error)
+	// errChan := make(chan error)
 	results := make(chan *node.Node)
 
 	m := &multicast.Multicast{Address: d.multicastAddress}
 	respChan, err := m.Listen(ctx)
 	if err != nil {
-		errChan <- err
+		return nil, err
 	}
 
 	go func() {
@@ -97,10 +113,7 @@ func (d *Disco) Discover(ctx context.Context) (nodes <-chan *node.Node, errors <
 				buffer := bytes.NewBuffer(resp.Payload)
 				rn := &node.Node{}
 				dec := gob.NewDecoder(buffer)
-				err := dec.Decode(rn)
-				if err != nil {
-					errChan <- err
-				}
+				dec.Decode(rn)
 
 				// Set the source address
 				rn.SrcIP = resp.SrcIP
@@ -112,5 +125,5 @@ func (d *Disco) Discover(ctx context.Context) (nodes <-chan *node.Node, errors <
 		}
 	}()
 
-	return results, errChan
+	return results, nil
 }

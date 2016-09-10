@@ -2,13 +2,15 @@ package disco
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"testing"
+	"time"
 
 	"gitlab.fg/go/disco/node"
 )
 
-const testMulticastAddress = "[ff12::9000]:21090"
+var testMulticastAddress = "[ff12::9000]:21090"
 
 func TestRegister(t *testing.T) {
 	ctx, cancelFunc := context.WithCancel(context.Background())
@@ -18,8 +20,7 @@ func TestRegister(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	n := new(node.Node)
-	n.IPv4Address = "127.0.0.1"
+	n := &node.Node{}
 
 	d.Register(ctx, n)
 	d.Deregister(n)
@@ -35,8 +36,8 @@ func TestDiscover(t *testing.T) {
 		n         *node.Node
 		shouldErr bool
 	}{
-		{&node.Node{IPv4Address: "9.0.0.1"}, false},
-		{&node.Node{IPv4Address: "8.8.0.1"}, false},
+		{&node.Node{}, false},
+		{&node.Node{SendInterval: 2 * time.Second}, false},
 	}
 
 	ctx, cancelFunc := context.WithCancel(context.Background())
@@ -46,26 +47,26 @@ func TestDiscover(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var checkNodes []*node.Node
-	var mu sync.Mutex
-	discoveredChan, errChan := d.Discover(ctx)
+	discoveredChan, err := d.Discover(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fmt.Println("here?")
 
 	go func() {
 		// Select will block until a result comes in
 		for {
 			select {
 			case rn := <-discoveredChan:
-				mu.Lock()
-				for _, n := range checkNodes {
-					if node.Equal(rn, n) {
-						n.Stop() // stop the node from multicasting
+				for _, test := range tests {
+					if rn.Equal(test.n) {
+						test.n.Stop() // stop the node from multicasting
+						fmt.Println("?", rn, test.n)
 						wg.Done()
+					} else {
+						fmt.Println("not equal")
 					}
 				}
-				mu.Unlock()
-
-			case err := <-errChan:
-				t.Fatal(err)
 			case <-ctx.Done():
 				return
 			}
@@ -77,15 +78,12 @@ func TestDiscover(t *testing.T) {
 		// Add to the WaitGroup for each test that should pass and add it to the nodes to verify
 		if !test.shouldErr {
 			wg.Add(1)
-			mu.Lock()
-			checkNodes = append(checkNodes, test.n)
-			mu.Unlock()
 
-			if err := test.n.Multicast(ctx, testMulticastAddress); err != nil {
+			if err := d.Register(ctx, test.n); err != nil {
 				t.Fatal("Multicast error", err)
 			}
 		} else {
-			if err := test.n.Multicast(ctx, testMulticastAddress); err == nil {
+			if err := d.Register(ctx, test.n); err == nil {
 				t.Fatal("Multicast of node should fail", err)
 			}
 		}
