@@ -3,7 +3,6 @@ package multicast
 import (
 	"context"
 	"errors"
-	"fmt"
 	"net"
 	"strings"
 	"sync"
@@ -31,12 +30,27 @@ type Response struct {
 var ErrNoIPv6 = errors.New("Couldn't find any IPv6 network intefaces")
 
 // init creates done chan
-func (m *Multicast) init() {
+func (m *Multicast) init() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.done == nil {
 		m.done = make(chan struct{})
 	}
+
+	if m.Address == "" {
+		return errors.New("Address is blank")
+	}
+
+	ip, _, err := net.SplitHostPort(m.Address)
+	if err != nil {
+		return err
+	}
+
+	if !net.ParseIP(ip).IsMulticast() {
+		return errors.New("multicastAddress is not valid")
+	}
+
+	return nil
 }
 
 // Done returns a channel that can be used to wait till send is stopped
@@ -54,11 +68,10 @@ func (m *Multicast) SendErr() error {
 
 // Send out to try to find others listening
 func (m *Multicast) Send(ctx context.Context, interval time.Duration, payload []byte) error {
-	if m.Address == "" {
-		return errors.New("Address needs to be set")
+	if err := m.init(); err != nil {
+		return err
 	}
 
-	m.init()
 	gaddr, err := net.ResolveUDPAddr("udp6", m.Address)
 	if err != nil {
 		return err
@@ -87,7 +100,7 @@ func (m *Multicast) Send(ctx context.Context, interval time.Duration, payload []
 		// Create ipv6 packet conn
 		pconn := ipv6.NewPacketConn(conn)
 
-		// Loop through all the interfaes
+		// Loop through all the interfaces
 		for _, intf := range intfs {
 			// If the interface is a loopback or doesn't have multicasting let's skip it
 			if strings.Contains(intf.Flags.String(), net.FlagLoopback.String()) || !strings.Contains(intf.Flags.String(), net.FlagMulticast.String()) {
@@ -128,13 +141,11 @@ func (m *Multicast) Send(ctx context.Context, interval time.Duration, payload []
 	go func() {
 		for {
 			select {
-			case <-time.After(time.Second * interval):
+			case <-time.After(interval):
 				send()
 			case <-ctx.Done():
-				fmt.Println("send done!!")
 				return
 			case <-m.done:
-				fmt.Println("stop chan")
 				return
 			}
 		}
@@ -161,7 +172,12 @@ func (m *Multicast) Stop() {
 }
 
 // Listen when a multicast is received we serve it
+// TODO create listen interval
 func (m *Multicast) Listen(ctx context.Context) (<-chan Response, error) {
+	if err := m.init(); err != nil {
+		return nil, err
+	}
+
 	respCh := make(chan Response)
 	gaddr, err := net.ResolveUDPAddr("udp6", m.Address)
 	conn, err := net.ListenPacket("udp6", m.Address)
@@ -195,11 +211,9 @@ func (m *Multicast) Listen(ctx context.Context) (<-chan Response, error) {
 		select {
 		case <-ctx.Done():
 			pconn.Close()
-			fmt.Println("close connection done!!")
 			return
 		case <-m.Done():
 			pconn.Close()
-			fmt.Println("m close connection done!!")
 			return
 		}
 	}()
@@ -219,7 +233,7 @@ func (m *Multicast) Listen(ctx context.Context) (<-chan Response, error) {
 				copy(b, buf)
 
 				// fmt.Printf("recv %d bytes from %s, message? %s \n", n, src, b)
-				fmt.Printf("recv %d bytes from %s \n", n, src)
+				// fmt.Printf("recv %d bytes from %s \n", n, src)
 
 				// check if b is a valid address format
 				payload := b
@@ -230,10 +244,8 @@ func (m *Multicast) Listen(ctx context.Context) (<-chan Response, error) {
 
 				respCh <- resp
 			case <-ctx.Done():
-				fmt.Println("Listen done!!")
 				return
 			case <-m.Done():
-				fmt.Println("m Listen done!!")
 				return
 			}
 		}

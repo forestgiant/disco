@@ -10,9 +10,9 @@ import (
 	"time"
 )
 
-func TestSendAndListen(t *testing.T) {
-	testMulticastAddress := "[ff12::9000]:21090"
+var testMulticastAddress = "[ff12::9000]:21090"
 
+func TestSendAndListen(t *testing.T) {
 	var tests = []struct {
 		m         *Multicast
 		delay     time.Duration
@@ -20,7 +20,7 @@ func TestSendAndListen(t *testing.T) {
 		shouldErr bool
 	}{
 		{&Multicast{}, 0, nil, true},
-		{&Multicast{Address: testMulticastAddress}, 3, []byte("Hello World"), false},
+		{&Multicast{Address: testMulticastAddress}, 3, []byte("Hello TestSendAndListen"), false},
 		{&Multicast{Address: testMulticastAddress}, 0, []byte("Say hello again"), false},
 		{&Multicast{Address: testMulticastAddress}, 1, []byte("123412341234"), false},
 	}
@@ -93,6 +93,7 @@ func TestSendAndListen(t *testing.T) {
 		}
 
 		wg.Wait() // Block until all test multicasts are stopped
+		listener.Stop()
 		cancel()
 	}()
 
@@ -114,11 +115,9 @@ func TestSendAndListen(t *testing.T) {
 }
 
 func TestStop(t *testing.T) {
-	testMulticastAddress := "[ff12::9000]:21090"
-
 	m := &Multicast{Address: testMulticastAddress}
 
-	payload := []byte("Hello World")
+	payload := []byte("Hello TestStop")
 	if err := m.Send(context.TODO(), 3, payload); err != nil {
 		t.Fatal("Send error", err)
 	}
@@ -139,11 +138,9 @@ func TestStop(t *testing.T) {
 }
 
 func TestCtxCancelFunc(t *testing.T) {
-	testMulticastAddress := "[ff12::9000]:21090"
-
 	m := &Multicast{Address: testMulticastAddress}
 
-	payload := []byte("Hello World")
+	payload := []byte("Hello TestCtxCancelFunc")
 	ctx, cancel := context.WithCancel(context.Background())
 	if err := m.Send(ctx, 3, payload); err != nil {
 		t.Fatal("Send error", err)
