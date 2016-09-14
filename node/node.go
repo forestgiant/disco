@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/gob"
+	"fmt"
 	"net"
 	"strings"
 	"sync"
@@ -12,11 +13,18 @@ import (
 	"gitlab.fg/go/disco/multicast"
 )
 
+// Modes of a node being registered
+const (
+	RegisterAction   = iota
+	DeregisterAction = iota
+)
+
 // Node represents a machine registered with Disco
 type Node struct {
 	Values       Values
 	SrcIP        net.IP
 	SendInterval time.Duration
+	Action       int
 	ipv6         net.IP // TODO make this private and automatically set this
 	ipv4         net.IP // TODO make this private and automatically set this
 	mc           *multicast.Multicast
@@ -25,6 +33,10 @@ type Node struct {
 
 // Values stores any values passed to the node
 type Values map[string]string
+
+func (n *Node) String() string {
+	return fmt.Sprintf("IPv4: %s, IPv6: %s, Values: %s", n.ipv4, n.ipv6, n.Values)
+}
 
 // Equal compares nodes
 func (n *Node) Equal(b *Node) bool {
@@ -39,6 +51,10 @@ func (n *Node) Equal(b *Node) bool {
 	if !n.ipv6.Equal(b.ipv6) {
 		return false
 	}
+
+	// if n.SendInterval != b.SendInterval {
+	// 	return false
+	// }
 
 	// Check if the Values map is the same
 	if len(n.Values) != len(b.Values) {
@@ -62,18 +78,20 @@ func (n *Node) GobEncode() ([]byte, error) {
 
 	w := new(bytes.Buffer)
 	encoder := gob.NewEncoder(w)
-	err := encoder.Encode(n.ipv4)
-	if err != nil {
+
+	if err := encoder.Encode(n.SendInterval); err != nil {
 		return nil, err
 	}
 
-	err = encoder.Encode(n.ipv6)
-	if err != nil {
+	if err := encoder.Encode(n.ipv4); err != nil {
 		return nil, err
 	}
 
-	err = encoder.Encode(n.Values)
-	if err != nil {
+	if err := encoder.Encode(n.ipv6); err != nil {
+		return nil, err
+	}
+
+	if err := encoder.Encode(n.Values); err != nil {
 		return nil, err
 	}
 
@@ -87,13 +105,16 @@ func (n *Node) GobDecode(buf []byte) error {
 
 	r := bytes.NewBuffer(buf)
 	decoder := gob.NewDecoder(r)
-	err := decoder.Decode(&n.ipv4)
-	if err != nil {
+
+	if err := decoder.Decode(&n.SendInterval); err != nil {
 		return err
 	}
 
-	err = decoder.Decode(&n.ipv6)
-	if err != nil {
+	if err := decoder.Decode(&n.ipv4); err != nil {
+		return err
+	}
+
+	if err := decoder.Decode(&n.ipv6); err != nil {
 		return err
 	}
 
