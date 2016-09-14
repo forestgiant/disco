@@ -17,8 +17,8 @@ import (
 // Discover other nodes with the disco package via multicast
 // This creates a simple membership list of nodes
 func main() {
-	members := []*node.Node{}
-	d, err := disco.NewDisco("[ff12::9000]:21099")
+	multicastAddr := "[ff12::9000]:21099"
+	d, err := disco.NewDisco(multicastAddr)
 	ctx, cancelFunc := context.WithCancel(context.Background())
 
 	// Save any discovered nodes to a member slice
@@ -31,8 +31,13 @@ func main() {
 		for {
 			select {
 			case n := <-discoveredChan:
-				members = addToMemberlist(members, n)
-				printMembers(members)
+				fmt.Println(len(d.Members()), "Members")
+				switch n.Action {
+				case node.RegisterAction:
+					fmt.Println("Adding", n)
+				case node.DeregisterAction:
+					fmt.Println("Removing", n)
+				}
 			}
 		}
 	}()
@@ -46,10 +51,9 @@ func main() {
 
 	// Register ourselve as a node
 	n := &node.Node{Values: map[string]string{"Address": ln.Addr().String()}, SendInterval: 2 * time.Second}
-	if err != nil {
+	if err := n.Multicast(ctx, multicastAddr); err != nil {
 		log.Fatal(err)
 	}
-	d.Register(ctx, n)
 
 	// Listen for shutdown signal
 	sigs := make(chan os.Signal, 1)
@@ -69,23 +73,4 @@ func main() {
 		// os.Exit(0)
 	}
 
-}
-
-// Check if the members slice already has the node if it doesn't add it
-func addToMemberlist(members []*node.Node, n *node.Node) []*node.Node {
-	for _, m := range members {
-		if m.Equal(n) {
-			return members // node is already a member
-		}
-	}
-
-	return append(members, n)
-}
-
-// printMembers prints out information about the members found
-func printMembers(members []*node.Node) {
-	fmt.Printf("Updating members every 2 seconds. Currently found %d members. They are: \n", len(members))
-	for _, m := range members {
-		fmt.Println(m.Values["Address"])
-	}
 }
