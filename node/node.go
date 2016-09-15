@@ -29,6 +29,7 @@ type Node struct {
 	ipv4         net.IP // TODO make this private and automatically set this
 	mc           *multicast.Multicast
 	mu           sync.Mutex // protect ipv4, ipv6, mc, SendInterval
+	RegisterChan chan struct{}
 }
 
 // Values stores any values passed to the node
