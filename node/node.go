@@ -29,11 +29,17 @@ type Node struct {
 	ipv4         net.IP // TODO make this private and automatically set this
 	mc           *multicast.Multicast
 	mu           sync.Mutex // protect ipv4, ipv6, mc, SendInterval
-	RegisterChan chan struct{}
+	registerCh   chan struct{}
 }
 
 // Values stores any values passed to the node
 type Values map[string]string
+
+func (n *Node) init() {
+	if n.registerCh == nil {
+		n.registerCh = make(chan struct{})
+	}
+}
 
 func (n *Node) String() string {
 	return fmt.Sprintf("IPv4: %s, IPv6: %s, Values: %s", n.ipv4, n.ipv6, n.Values)
@@ -125,6 +131,18 @@ func (n *Node) GobDecode(buf []byte) error {
 // Done returns a channel that can be used to wait till Multicast is stopped
 func (n *Node) Done() <-chan struct{} {
 	return n.mc.Done()
+}
+
+// RegisterCh returns a channel to know if the node should stay registered
+func (n *Node) RegisterCh() <-chan struct{} {
+	n.init()
+	return n.registerCh
+}
+
+// KeepRegistered sends an anonymous struct{} to registeredChan to indicate the node should stay registered
+func (n *Node) KeepRegistered() {
+	n.init()
+	n.registerCh <- struct{}{}
 }
 
 // Multicast start the mulicast ping

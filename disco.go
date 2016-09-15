@@ -16,7 +16,8 @@ import (
 
 // Disco represents a list of discovered devices
 type Disco struct {
-	mu               sync.Mutex
+	mu sync.Mutex
+	// TODO only pass multicast port instead of full address since the address should be the same?
 	multicastAddress string
 	members          []*node.Node
 	// members        map[string]chan struct{}
@@ -110,7 +111,7 @@ func (d *Disco) Discover(ctx context.Context) (<-chan *node.Node, error) {
 				} else {
 					if index := d.indexOfMember(rn); index != -1 {
 						d.mu.Lock()
-						d.members[index].RegisterChan <- struct{}{}
+						d.members[index].KeepRegistered()
 						d.mu.Unlock()
 					}
 				}
@@ -129,7 +130,6 @@ func (d *Disco) register(results chan *node.Node, rn *node.Node) {
 
 	// If it's new to the members send it as a result
 	rn.Action = node.RegisterAction
-	rn.RegisterChan = make(chan struct{})
 
 	d.mu.Lock()
 	d.members = append(d.members, rn)
@@ -141,7 +141,7 @@ func (d *Disco) register(results chan *node.Node, rn *node.Node) {
 		for {
 			t := time.NewTimer(rn.SendInterval * 2)
 			select {
-			case <-rn.RegisterChan:
+			case <-rn.RegisterCh():
 				t.Stop()
 				continue
 			case <-t.C:
