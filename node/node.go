@@ -25,8 +25,8 @@ type Node struct {
 	SrcIP        net.IP
 	SendInterval time.Duration
 	Action       int
-	ipv6         net.IP // TODO make this private and automatically set this
-	ipv4         net.IP // TODO make this private and automatically set this
+	ipv6         net.IP // set by localIPv4 function
+	ipv4         net.IP // set by localIPv6 function
 	mc           *multicast.Multicast
 	mu           sync.Mutex // protect ipv4, ipv6, mc, SendInterval
 	registerCh   chan struct{}

@@ -26,6 +26,7 @@ type Disco struct {
 }
 
 // NewDisco setups and creates a *Disco yo
+// TODO is this contstructor needed?
 func NewDisco(multicastAddress string) (*Disco, error) {
 	if multicastAddress == "" {
 		return nil, errors.New("Address is blank")
