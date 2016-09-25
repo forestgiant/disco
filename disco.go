@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/gob"
 	"errors"
-	"fmt"
 	"net"
 	"sync"
 	"time"
@@ -16,18 +15,22 @@ import (
 
 // Disco represents a list of discovered devices
 type Disco struct {
-	mu sync.Mutex
-	// TODO only pass multicast port instead of full address since the address should be the same?
-	multicastAddress string
-	members          []*node.Node
-	// members        map[string]chan struct{}
-	closeChan      chan struct{}   // Returns the monitorRegister goroutine
+	mu             sync.Mutex      // protects members
+	members        []*node.Node    // stores all nodes registered
 	discoveredChan chan *node.Node // node.Serve() sends nodes to this chan
 }
 
-// NewDisco setups and creates a *Disco yo
-// TODO is this contstructor needed?
-func NewDisco(multicastAddress string) (*Disco, error) {
+// Members returns all nodes that are registered
+// TODO update to return Nodes
+func (d *Disco) Members() []*node.Node {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	return d.members
+}
+
+// Discover listens for multicast sends and registers and nodes it finds
+func (d *Disco) Discover(ctx context.Context, multicastAddress string) (<-chan *node.Node, error) {
 	if multicastAddress == "" {
 		return nil, errors.New("Address is blank")
 	}
@@ -41,54 +44,13 @@ func NewDisco(multicastAddress string) (*Disco, error) {
 		return nil, errors.New("multicastAddress is not valid")
 	}
 
-	d := new(Disco)
-	d.multicastAddress = multicastAddress
-	d.discoveredChan = make(chan *node.Node)
-
-	return d, nil
-}
-
-// Register takes a node and registers it to be discovered
-// func (d *Disco) register(ctx context.Context, n *node.Node) error {
-// 	d.mu.Lock()
-// 	defer d.mu.Unlock()
-
-// 	d.members = append(d.members, n)
-// 	return nil
-// }
-
-// Deregister takes a node and deregisters it
-func (d *Disco) deregister(n *node.Node) {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	// Remove node from regsistered
-	for i, m := range d.members {
-		// make sure the node we sent matches
-		if m == n {
-			// remove it from the slice
-			d.members = append(d.members[:i], d.members[i+1:]...)
-		}
+	if d.discoveredChan == nil {
+		d.discoveredChan = make(chan *node.Node)
 	}
-}
 
-// Members returns all nodes that are registered
-// TODO update to return Nodes
-func (d *Disco) Members() []*node.Node {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-
-	return d.members
-}
-
-// Discover listens for multicast sends
-// TODO should discover automatically keep track of the members and have a callback
-// that is called anytime the membership changes?
-func (d *Disco) Discover(ctx context.Context) (<-chan *node.Node, error) {
-	// respChan := make(chan multicast.Response)
-	// errChan := make(chan error)
 	results := make(chan *node.Node)
 
-	m := &multicast.Multicast{Address: d.multicastAddress}
+	m := &multicast.Multicast{Address: multicastAddress}
 	respChan, err := m.Listen(ctx)
 	if err != nil {
 		return nil, err
@@ -126,9 +88,10 @@ func (d *Disco) Discover(ctx context.Context) (<-chan *node.Node, error) {
 	return results, nil
 }
 
+// register adds newly discovered nodes to the d.members slice and sending the node
+// over the result chan. Then it creates a new goroutine for each node that checks
+// if it can read on it's registerCh. If it can't within rn.SendInterval * 2 it derigesters
 func (d *Disco) register(results chan *node.Node, rn *node.Node) {
-	fmt.Println("registering", rn)
-
 	// If it's new to the members send it as a result
 	rn.Action = node.RegisterAction
 
@@ -150,12 +113,25 @@ func (d *Disco) register(results chan *node.Node, rn *node.Node) {
 				// Deregister if it times out
 				rn.Action = node.DeregisterAction
 				d.deregister(rn)
-				fmt.Println("Registration timeout out for", rn, " deregistering")
 				results <- rn
 				return
 			}
 		}
 	}()
+}
+
+// Deregister takes a node and removes it from the d.members slice
+func (d *Disco) deregister(n *node.Node) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	// Remove node from regsistered
+	for i, m := range d.members {
+		// make sure the node we sent matches
+		if m == n {
+			// remove it from the slice
+			d.members = append(d.members[:i], d.members[i+1:]...)
+		}
+	}
 }
 
 // Check if the members slice already has the node if it doesn't add it
@@ -169,6 +145,8 @@ func (d *Disco) addToMembers(n *node.Node) bool {
 	return true
 }
 
+// indexOfMember checks if a node is in the d.members slice
+// and returns it's index, if it isn't there it returns -1
 func (d *Disco) indexOfMember(n *node.Node) int {
 	for i, a := range d.Members() {
 		if a.Equal(n) {
