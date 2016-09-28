@@ -1,28 +1,23 @@
-package main
+package disco
 
 import (
 	"context"
 	"fmt"
 	"log"
 	"net"
-	"os"
-	"os/signal"
-	"syscall"
 	"time"
 
-	"gitlab.fg/go/disco"
 	"gitlab.fg/go/disco/node"
 )
 
-// Discover other nodes with the disco package via multicast
-// This creates a simple membership list of nodes
-func main() {
+// Discover any other members on multicasting on an IPv6 multicast address
+func DiscoverMembers() {
+	// To discover other members you must know what IPv6 multicast address they are multicasting on.
 	multicastAddr := "[ff12::9000]:21099"
-	d := &disco.Disco{}
-	ctx, cancelFunc := context.WithCancel(context.Background())
 
 	// Start discovering
-	discoveredChan, err := d.Discover(ctx, multicastAddr)
+	d := &Disco{}
+	discoveredChan, err := d.Discover(context.TODO(), multicastAddr)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -42,6 +37,12 @@ func main() {
 			}
 		}
 	}()
+}
+
+// If you want to want other members to know about your node then you need to create a new Node and multicast.
+func RegisterNode() {
+	// Must multicast on the same IPv6 multicast address others are Discovering on
+	multicastAddr := "[ff12::9000]:21099"
 
 	// Get a unique address
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -52,26 +53,7 @@ func main() {
 
 	// Register ourselve as a node
 	n := &node.Node{Values: map[string]string{"Address": ln.Addr().String()}, SendInterval: 2 * time.Second}
-	if err := n.Multicast(ctx, multicastAddr); err != nil {
+	if err := n.Multicast(context.TODO(), multicastAddr); err != nil {
 		log.Fatal(err)
 	}
-
-	// Listen for shutdown signal
-	sigs := make(chan os.Signal, 1)
-	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
-	go func() {
-		select {
-		case <-sigs:
-			cancelFunc()
-		}
-	}()
-
-	// Select will block until a result comes in
-	select {
-	case <-ctx.Done():
-		fmt.Println("Closing membership")
-		return
-		// os.Exit(0)
-	}
-
 }
