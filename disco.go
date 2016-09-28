@@ -20,8 +20,7 @@ type Disco struct {
 	discoveredChan chan *node.Node // node.Serve() sends nodes to this chan
 }
 
-// Members returns all nodes that are registered
-// TODO update to return Nodes
+// Members returns all node in members slice
 func (d *Disco) Members() []*node.Node {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -29,7 +28,7 @@ func (d *Disco) Members() []*node.Node {
 	return d.members
 }
 
-// Discover listens for multicast sends and registers and nodes it finds
+// Discover listens for multicast sends and registers any nodes it finds
 func (d *Disco) Discover(ctx context.Context, multicastAddress string) (<-chan *node.Node, error) {
 	if multicastAddress == "" {
 		return nil, errors.New("Address is blank")

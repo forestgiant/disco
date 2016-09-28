@@ -66,6 +66,94 @@ func (m *Multicast) SendErr() error {
 	return m.sendErr
 }
 
+// Stop quits sending over multicast
+func (m *Multicast) Stop() {
+	m.init()
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.closed {
+		return
+	}
+
+	m.sendErr = nil // reset any send errors after we stop
+	close(m.done)
+	m.closed = true
+}
+
+// Listen when a multicast is received we serve it
+func (m *Multicast) Listen(ctx context.Context) (<-chan Response, error) {
+	if err := m.init(); err != nil {
+		return nil, err
+	}
+
+	respCh := make(chan Response)
+	gaddr, err := net.ResolveUDPAddr("udp6", m.Address)
+	conn, err := net.ListenPacket("udp6", m.Address)
+	if err != nil {
+		return nil, err
+	}
+
+	intfs, err := net.Interfaces()
+	if err != nil {
+		return nil, err
+	}
+
+	pconn := ipv6.NewPacketConn(conn)
+	joined := 0
+	for _, intf := range intfs {
+		pconn.JoinGroup(&intf, &net.UDPAddr{IP: gaddr.IP})
+		joined++
+	}
+
+	if joined == 0 {
+		return nil, errors.New("no multicast interfaces available")
+	}
+
+	// if the context is done close the connection to stop the for loop from blocking
+	go func() {
+		select {
+		case <-ctx.Done():
+			pconn.Close()
+			return
+		case <-m.Done():
+			pconn.Close()
+			return
+		}
+	}()
+
+	buf := make([]byte, 65536)
+	go func() {
+		for {
+			select {
+			default:
+				n, _, src, err := pconn.ReadFrom(buf)
+				if err != nil {
+					continue
+				}
+
+				// make a copy because we will overwrite buf
+				b := make([]byte, n)
+				copy(b, buf)
+
+				// check if b is a valid address format
+				payload := b
+				resp := Response{
+					Payload: payload,
+					SrcIP:   src.(*net.UDPAddr).IP,
+				}
+
+				respCh <- resp
+			case <-ctx.Done():
+				return
+			case <-m.Done():
+				return
+			}
+		}
+	}()
+
+	return respCh, nil
+}
+
 // Send out to try to find others listening
 func (m *Multicast) Send(ctx context.Context, interval time.Duration, payload []byte) error {
 	if err := m.init(); err != nil {
@@ -77,7 +165,7 @@ func (m *Multicast) Send(ctx context.Context, interval time.Duration, payload []
 		return err
 	}
 
-	conn, err := net.ListenPacket("udp6", ":0")
+	conn, err := net.ListenPacket("udp6", "[::]:0")
 	if err != nil {
 		return err
 	}
@@ -92,7 +180,9 @@ func (m *Multicast) Send(ctx context.Context, interval time.Duration, payload []
 		// Track if any of the interfaces succesfully sent a message
 		success := 0
 
-		// Set write control message
+		// Set write control message to 1 so it can be forward by the router
+		// TODO: may need to up this if there are multiple routers on the network
+		// https://tools.ietf.org/html/rfc2460
 		wcm := &ipv6.ControlMessage{
 			HopLimit: 1,
 		}
@@ -155,103 +245,6 @@ func (m *Multicast) Send(ctx context.Context, interval time.Duration, payload []
 	send()
 
 	return nil
-}
-
-// Stop quits sending over multicast
-func (m *Multicast) Stop() {
-	m.init()
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if m.closed {
-		return
-	}
-
-	m.sendErr = nil // reset any send errors after we stop
-	close(m.done)
-	m.closed = true
-}
-
-// Listen when a multicast is received we serve it
-// TODO create listen interval
-func (m *Multicast) Listen(ctx context.Context) (<-chan Response, error) {
-	if err := m.init(); err != nil {
-		return nil, err
-	}
-
-	respCh := make(chan Response)
-	gaddr, err := net.ResolveUDPAddr("udp6", m.Address)
-	conn, err := net.ListenPacket("udp6", m.Address)
-	if err != nil {
-		return nil, err
-	}
-
-	intfs, err := net.Interfaces()
-	if err != nil {
-		return nil, err
-	}
-
-	pconn := ipv6.NewPacketConn(conn)
-	joined := 0
-	for _, intf := range intfs {
-		// err := pconn.JoinGroup(&intf, &net.UDPAddr{IP: gaddr.IP})
-		pconn.JoinGroup(&intf, &net.UDPAddr{IP: gaddr.IP})
-		// if err != nil {
-		// 	// fmt.Println("IPv6 join", intf.Name, "failed:", err)
-		// 	// errChan <- err
-		// }
-		joined++
-	}
-
-	if joined == 0 {
-		return nil, errors.New("no multicast interfaces available")
-	}
-
-	// if the context is done close the connection to stop the for loop from blocking
-	go func() {
-		select {
-		case <-ctx.Done():
-			pconn.Close()
-			return
-		case <-m.Done():
-			pconn.Close()
-			return
-		}
-	}()
-
-	buf := make([]byte, 65536)
-	go func() {
-		for {
-			select {
-			default:
-				n, _, src, err := pconn.ReadFrom(buf)
-				if err != nil {
-					continue
-				}
-
-				// make a copy because we will overwrite buf
-				b := make([]byte, n)
-				copy(b, buf)
-
-				// fmt.Printf("recv %d bytes from %s, message? %s \n", n, src, b)
-				// fmt.Printf("recv %d bytes from %s \n", n, src)
-
-				// check if b is a valid address format
-				payload := b
-				resp := Response{
-					Payload: payload,
-					SrcIP:   src.(*net.UDPAddr).IP,
-				}
-
-				respCh <- resp
-			case <-ctx.Done():
-				return
-			case <-m.Done():
-				return
-			}
-		}
-	}()
-
-	return respCh, nil
 }
 
 // containsIPv6 checks to see if any net.Addr has an IPv6 address

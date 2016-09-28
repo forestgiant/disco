@@ -2,6 +2,7 @@ package disco
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"testing"
@@ -12,24 +13,45 @@ import (
 
 var testMulticastAddress = "[ff12::9000]:21090"
 
-// func Test_register(t *testing.T) {
-// 	ctx, cancelFunc := context.WithCancel(context.Background())
-// 	defer cancelFunc() // stop disco
-// 	d, err := NewDisco(testMulticastAddress)
-// 	if err != nil {
-// 		t.Fatal(err)
-// 	}
+func Test_register(t *testing.T) {
+	d := &Disco{}
+	n := &node.Node{}
+	r := make(chan *node.Node)
+	closeCh := make(chan struct{})
+	errCh := make(chan error)
+	go func() {
+		defer close(closeCh)
+		select {
+		case <-r:
+			// Make sure we have 1 member
+			if len(d.Members()) != 1 {
+				t.Errorf("TestDeregister: One node should be registered. Received: %b, Should be: %b \n",
+					len(d.Members()), 0)
+			}
 
-// 	n := &node.Node{}
+			// Now deregister and make sure we have 0 members
+			d.deregister(n)
+			if len(d.Members()) != 0 {
+				t.Errorf("TestDeregister: All nodes should be deregistered. Received: %b, Should be: %b \n",
+					len(d.Members()), 0)
+			}
+		case <-time.After(100 * time.Millisecond):
+			errCh <- errors.New("Test_register timed out")
+		}
+	}()
 
-// 	d.register(ctx, n)
-// 	d.deregister(n)
-// 	nodes := d.Members()
-// 	if len(nodes) != 0 {
-// 		t.Errorf("TestDeregister: All nodes should be deregistered. Received: %b, Should be: %b \n",
-// 			len(nodes), 0)
-// 	}
-// }
+	d.register(r, n)
+
+	// Block until closeCh is closed on a timed out happens
+	for {
+		select {
+		case <-closeCh:
+			return
+		case err := <-errCh:
+			t.Fatal(err)
+		}
+	}
+}
 
 func TestDiscover(t *testing.T) {
 	var tests = []struct {
@@ -43,11 +65,9 @@ func TestDiscover(t *testing.T) {
 	ctx, cancelFunc := context.WithCancel(context.Background())
 	defer cancelFunc() // stop disco
 	wg := &sync.WaitGroup{}
-	d, err := NewDisco(testMulticastAddress)
-	if err != nil {
-		t.Fatal(err)
-	}
-	discoveredChan, err := d.Discover(ctx)
+	d := &Disco{}
+
+	discoveredChan, err := d.Discover(ctx, testMulticastAddress)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -102,11 +122,8 @@ func TestDiscoverSameNode(t *testing.T) {
 	ctx, cancelFunc := context.WithCancel(context.Background())
 	defer cancelFunc() // stop disco
 	wg := &sync.WaitGroup{}
-	d, err := NewDisco(testMulticastAddress)
-	if err != nil {
-		t.Fatal(err)
-	}
-	discoveredChan, err := d.Discover(ctx)
+	d := &Disco{}
+	discoveredChan, err := d.Discover(ctx, testMulticastAddress)
 	if err != nil {
 		t.Fatal(err)
 	}

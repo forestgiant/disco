@@ -28,7 +28,7 @@ type Node struct {
 	ipv6         net.IP // set by localIPv4 function
 	ipv4         net.IP // set by localIPv6 function
 	mc           *multicast.Multicast
-	mu           sync.Mutex // protect ipv4, ipv6, mc, SendInterval
+	mu           sync.Mutex // protect ipv4, ipv6, mc, SendInterval, registerCh
 	registerCh   chan struct{}
 }
 
@@ -36,6 +36,8 @@ type Node struct {
 type Values map[string]string
 
 func (n *Node) init() {
+	n.mu.Lock()
+	defer n.mu.Unlock()
 	if n.registerCh == nil {
 		n.registerCh = make(chan struct{})
 	}
@@ -58,10 +60,6 @@ func (n *Node) Equal(b *Node) bool {
 	if !n.ipv6.Equal(b.ipv6) {
 		return false
 	}
-
-	// if n.SendInterval != b.SendInterval {
-	// 	return false
-	// }
 
 	// Check if the Values map is the same
 	if len(n.Values) != len(b.Values) {

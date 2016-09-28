@@ -18,11 +18,11 @@ import (
 // This creates a simple membership list of nodes
 func main() {
 	multicastAddr := "[ff12::9000]:21099"
-	d, err := disco.NewDisco(multicastAddr)
+	d := &disco.Disco{}
 	ctx, cancelFunc := context.WithCancel(context.Background())
 
 	// Save any discovered nodes to a member slice
-	discoveredChan, err := d.Discover(ctx)
+	discoveredChan, err := d.Discover(ctx, multicastAddr)
 	if err != nil {
 		log.Fatal(err)
 	}
