@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-var testMulticastAddress = "[ff12::9000]:21090"
+var testMulticastAddress = "[ff12::9000]:30001"
 
 func TestListen(t *testing.T) {
 	listener := &Multicast{Address: testMulticastAddress}

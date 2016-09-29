@@ -13,7 +13,7 @@ import (
 // Discover any other members on multicasting on an IPv6 multicast address
 func DiscoverMembers() {
 	// To discover other members you must know what IPv6 multicast address they are multicasting on.
-	multicastAddr := "[ff12::9000]:21099"
+	multicastAddr := "[ff12::9000]:30000"
 
 	// Start discovering
 	d := &Disco{}

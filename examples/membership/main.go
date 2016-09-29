@@ -17,7 +17,7 @@ import (
 // Discover other nodes with the disco package via multicast
 // This creates a simple membership list of nodes
 func main() {
-	multicastAddr := "[ff12::9000]:21099"
+	multicastAddr := "[ff12::9000]:30000"
 	d := &disco.Disco{}
 	ctx, cancelFunc := context.WithCancel(context.Background())
 

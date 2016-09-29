@@ -15,7 +15,7 @@ import (
 	"gitlab.fg/go/disco/multicast"
 )
 
-const testMulticastAddress = "[ff12::9000]:21090"
+const testMulticastAddress = "[ff12::9000]:30002"
 
 func Test_init(t *testing.T) {
 	n := &Node{}

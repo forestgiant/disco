@@ -11,7 +11,7 @@ import (
 	"gitlab.fg/go/disco/node"
 )
 
-var testMulticastAddress = "[ff12::9000]:21090"
+var testMulticastAddress = "[ff12::9000]:30000"
 
 func Test_register(t *testing.T) {
 	d := &Disco{}
@@ -81,8 +81,6 @@ func TestDiscover(t *testing.T) {
 					if rn.Equal(test.n) {
 						test.n.Stop() // stop the node from multicasting
 						wg.Done()
-					} else {
-						fmt.Println("not equal")
 					}
 				}
 			case <-ctx.Done():
