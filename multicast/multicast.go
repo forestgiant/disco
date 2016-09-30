@@ -1,10 +1,11 @@
 package multicast
 
 import (
+	"context"
 	"errors"
-	"log"
 	"net"
 	"strings"
+	"sync"
 	"time"
 
 	"golang.org/x/net/ipv6"
@@ -13,12 +14,10 @@ import (
 // Multicast struct
 type Multicast struct {
 	Address string
-	// Payload      []byte
-	Retries      int32
-	Timeout      time.Duration
-	StopPongChan chan struct{}
-	StopPingChan chan struct{}
-	// pingCount    *int32
+	done    chan struct{}
+	sendErr error
+	mu      sync.Mutex // protect done and closed
+	closed  bool
 }
 
 // Response struct is sent over a channel when a pong is successful
@@ -30,195 +29,222 @@ type Response struct {
 // ErrNoIPv6 error if no IPv6 interfaces were found
 var ErrNoIPv6 = errors.New("Couldn't find any IPv6 network intefaces")
 
-// PongCallback is passed to the Pong function
-// type PongCallback func(payload []byte, srcIP net.IP) error
+// init creates done chan
+func (m *Multicast) init() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.done == nil {
+		m.done = make(chan struct{})
+	}
 
-// NewMulticast return a Multicast struct and create the wg and shutdownChan
-// func NewMulticast(address string) *Multicast {
-// 	m := new(Multicast)
-// 	m.Address = address
-// 	m.Retries = 3
-// 	m.Timeout = 3
-// 	// m.pingCount = new(int32)
-// 	m.stopPingChan = make(chan struct{})
-// 	m.stopPongChan = make(chan struct{})
-//
-// 	return m
-// }
+	if m.Address == "" {
+		return errors.New("Address is blank")
+	}
 
-// Ping out to try to find others listening
-func (m *Multicast) Ping(payload []byte, errc chan<- error) {
-	gaddr, err := net.ResolveUDPAddr("udp6", m.Address)
+	ip, _, err := net.SplitHostPort(m.Address)
 	if err != nil {
-		// fmt.Println(err)
-		errc <- err
+		return err
 	}
 
-	conn, err := net.ListenPacket("udp6", ":0")
-	if err != nil {
-		// fmt.Println(err)
-		errc <- err
+	if !net.ParseIP(ip).IsMulticast() {
+		return errors.New("multicastAddress is not valid")
 	}
 
-	pconn := ipv6.NewPacketConn(conn)
-
-	wcm := &ipv6.ControlMessage{
-		HopLimit: 1,
-	}
-
-	bs := payload
-	// for bs := range w.inbox {
-	intfs, err := net.Interfaces()
-	if err != nil {
-		// fmt.Println(err)
-		errc <- err
-	}
-
-	for {
-		select {
-		default:
-			// Keep trying every three seconds until shutdownChan is closed or
-			// we tried 3 times
-			// if atomic.LoadInt32(m.pingCount) >= m.Retries {
-			// 	fmt.Println("Warning: Ping timed out without a response. Please verify your network interfaces have IPv6 support.")
-			// 	// return
-			// }
-
-			// Track if any of the interfaces succesfully sent a message
-			success := 0
-
-			// Loop through all the interfaes
-			for _, intf := range intfs {
-				// If the interface is a loopback or doesn't have multicasting let's skip it
-				if strings.Contains(intf.Flags.String(), net.FlagLoopback.String()) || !strings.Contains(intf.Flags.String(), net.FlagMulticast.String()) {
-					continue
-				}
-
-				// Now let's check if the interface has an ipv6 address
-				addrs, err := intf.Addrs()
-				if err != nil {
-					continue
-				}
-
-				if !containsIPv6(addrs) {
-					continue
-				}
-
-				wcm.IfIndex = intf.Index
-				pconn.SetWriteDeadline(time.Now().Add(time.Second))
-				_, err = pconn.WriteTo(bs, wcm, gaddr)
-				pconn.SetWriteDeadline(time.Time{})
-
-				if err != nil {
-					// fmt.Println(err)
-					continue
-				}
-
-				log.Println("Sending Ping on interface:", intf.Name, intf.Flags)
-				// fmt.Printf("sent %d bytes to %v on %s \n", len(bs), gaddr, intf.Name)
-				success++
-			}
-
-			if success <= 0 {
-				// fmt.Println("Couldn't find any IPv6 network intefaces")
-				errc <- ErrNoIPv6
-			}
-
-			// fmt.Printf("Tried %d interfaces \n", success)
-
-			// Let's wait 3 seconds before pinging again
-			// atomic.AddInt32(m.pingCount, 1)
-
-			time.Sleep(time.Second * m.Timeout)
-		case <-m.StopPingChan:
-			return
-		}
-	}
+	return nil
 }
 
-// Pong when a multicast is received we serve it
-func (m *Multicast) Pong(respChan chan<- Response, errc chan<- error) {
+// Done returns a channel that can be used to wait till send is stopped
+func (m *Multicast) Done() <-chan struct{} {
+	m.init()
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.done
+}
+
+// SendErr returns any send errors
+func (m *Multicast) SendErr() error {
+	return m.sendErr
+}
+
+// Stop quits sending over multicast
+func (m *Multicast) Stop() {
+	m.init()
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.closed {
+		return
+	}
+
+	m.sendErr = nil // reset any send errors after we stop
+	close(m.done)
+	m.closed = true
+}
+
+// Listen when a multicast is received we serve it
+func (m *Multicast) Listen(ctx context.Context) (<-chan Response, error) {
+	if err := m.init(); err != nil {
+		return nil, err
+	}
+
+	respCh := make(chan Response)
 	gaddr, err := net.ResolveUDPAddr("udp6", m.Address)
 	conn, err := net.ListenPacket("udp6", m.Address)
 	if err != nil {
-		// fmt.Println(err)
-		errc <- err
+		return nil, err
 	}
 
 	intfs, err := net.Interfaces()
 	if err != nil {
-		// fmt.Println(err)
-		errc <- err
+		return nil, err
 	}
 
 	pconn := ipv6.NewPacketConn(conn)
 	joined := 0
 	for _, intf := range intfs {
-		err := pconn.JoinGroup(&intf, &net.UDPAddr{IP: gaddr.IP})
-		if err != nil {
-			// fmt.Println("IPv6 join", intf.Name, "failed:", err)
-			// errChan <- err
-		}
-		// else {
-		// 	fmt.Println("IPv6 join", intf.Name, "success")
-		// }
+		pconn.JoinGroup(&intf, &net.UDPAddr{IP: gaddr.IP})
 		joined++
 	}
 
 	if joined == 0 {
-		// fmt.Println("no multicast interfaces available")
-		errc <- errors.New("no multicast interfaces available")
+		return nil, errors.New("no multicast interfaces available")
 	}
 
-	buf := make([]byte, 65536)
-	for {
+	// if the context is done close the connection to stop the for loop from blocking
+	go func() {
 		select {
-		default:
-			n, _, src, err := pconn.ReadFrom(buf)
-			if err != nil {
-				// fmt.Println(err)
-				// errChan <- err
+		case <-ctx.Done():
+			pconn.Close()
+			return
+		case <-m.Done():
+			pconn.Close()
+			return
+		}
+	}()
+
+	buf := make([]byte, 65536)
+	go func() {
+		for {
+			select {
+			default:
+				n, _, src, err := pconn.ReadFrom(buf)
+				if err != nil {
+					continue
+				}
+
+				// make a copy because we will overwrite buf
+				b := make([]byte, n)
+				copy(b, buf)
+
+				// check if b is a valid address format
+				payload := b
+				resp := Response{
+					Payload: payload,
+					SrcIP:   src.(*net.UDPAddr).IP,
+				}
+
+				respCh <- resp
+			case <-ctx.Done():
+				return
+			case <-m.Done():
+				return
+			}
+		}
+	}()
+
+	return respCh, nil
+}
+
+// Send out to try to find others listening
+func (m *Multicast) Send(ctx context.Context, interval time.Duration, payload []byte) error {
+	if err := m.init(); err != nil {
+		return err
+	}
+
+	gaddr, err := net.ResolveUDPAddr("udp6", m.Address)
+	if err != nil {
+		return err
+	}
+
+	conn, err := net.ListenPacket("udp6", "[::]:0")
+	if err != nil {
+		return err
+	}
+
+	bs := payload
+	intfs, err := net.Interfaces()
+	if err != nil {
+		return err
+	}
+
+	send := func() {
+		// Track if any of the interfaces succesfully sent a message
+		success := 0
+
+		// Set write control message to 1 so it can be forward by the router
+		// TODO: may need to up this if there are multiple routers on the network
+		// https://tools.ietf.org/html/rfc2460
+		wcm := &ipv6.ControlMessage{
+			HopLimit: 1,
+		}
+
+		// Create ipv6 packet conn
+		pconn := ipv6.NewPacketConn(conn)
+
+		// Loop through all the interfaces
+		for _, intf := range intfs {
+			// If the interface is a loopback or doesn't have multicasting let's skip it
+			if strings.Contains(intf.Flags.String(), net.FlagLoopback.String()) || !strings.Contains(intf.Flags.String(), net.FlagMulticast.String()) {
 				continue
 			}
 
-			// make a copy because we will overwrite buf
-			b := make([]byte, n)
-			copy(b, buf)
-
-			// fmt.Printf("recv %d bytes from %s, message? %s \n", n, src, b)
-			log.Printf("recv %d bytes from %s \n", n, src)
-
-			// Received a ping. Decrement ping count
-			// atomic.AddInt32(m.pingCount, 1)
-
-			// check if b is a valid address format
-			payload := b
-			resp := Response{
-				Payload: payload,
-				SrcIP:   src.(*net.UDPAddr).IP,
+			// Now let's check if the interface has an ipv6 address
+			addrs, err := intf.Addrs()
+			if err != nil {
+				continue
 			}
 
-			respChan <- resp
-			// err = callback(payload, src.(*net.UDPAddr).IP)
-			// if err != nil {
-			// 	// fmt.Println(err)
-			// 	// errChan <- err
-			// 	continue
-			// }
-		case <-m.StopPongChan:
+			if !containsIPv6(addrs) {
+				continue
+			}
+
+			wcm.IfIndex = intf.Index
+			pconn.SetWriteDeadline(time.Now().Add(time.Second))
+			_, err = pconn.WriteTo(bs, wcm, gaddr)
+			pconn.SetWriteDeadline(time.Time{})
+
+			if err != nil {
+				continue
+			}
+
+			// fmt.Println("Sending Ping on interface:", intf.Name, intf.Flags)
+			success++
+		}
+
+		if success <= 0 {
+			// stop the multicast if there was an error and set the error
+			m.sendErr = ErrNoIPv6
+			m.Stop()
 			return
 		}
 	}
-}
 
-// StopPing returns out of ping
-func (m *Multicast) StopPing() {
-	close(m.StopPingChan)
-}
+	go func() {
+		for {
+			select {
+			case <-time.After(interval):
+				send()
+			case <-ctx.Done():
+				return
+			case <-m.done:
+				return
+			}
+		}
+	}()
 
-// StopPong returns out of ping
-func (m *Multicast) StopPong() {
-	close(m.StopPongChan)
+	// call send right away
+	send()
+
+	return nil
 }
 
 // containsIPv6 checks to see if any net.Addr has an IPv6 address

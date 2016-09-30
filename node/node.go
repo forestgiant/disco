@@ -2,74 +2,101 @@ package node
 
 import (
 	"bytes"
+	"context"
 	"encoding/gob"
-	"errors"
 	"fmt"
 	"net"
+	"strings"
+	"sync"
+	"time"
 
 	"gitlab.fg/go/disco/multicast"
 )
 
 // Modes of a node being registered
-// const (
-// 	RegisterAction   = iota
-// 	DeregisterAction = iota
-// )
-
-// ListenCallback called when a listener is pinged
-// type ListenCallback func(rn *Node) error
+const (
+	RegisterAction   = iota
+	DeregisterAction = iota
+)
 
 // Node represents a machine registered with Disco
 type Node struct {
-	IPv6Address      string
-	IPv4Address      string
-	SrcIP            net.IP
-	MulticastAddress string
-	ErrChan          chan error
-	shutdownChan     chan struct{}
-	// Action           int
-	multicast *multicast.Multicast
+	Values       Values
+	SrcIP        net.IP
+	SendInterval time.Duration
+	Action       int
+	ipv6         net.IP // set by localIPv4 function
+	ipv4         net.IP // set by localIPv6 function
+	mc           *multicast.Multicast
+	mu           sync.Mutex // protect ipv4, ipv6, mc, SendInterval, registerCh
+	registerCh   chan struct{}
+}
 
-	RespondLocalPing bool // Used for testing
+// Values stores any values passed to the node
+type Values map[string]string
+
+func (n *Node) init() {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if n.registerCh == nil {
+		n.registerCh = make(chan struct{})
+	}
+}
+
+func (n *Node) String() string {
+	return fmt.Sprintf("IPv4: %s, IPv6: %s, Values: %s", n.ipv4, n.ipv6, n.Values)
 }
 
 // Equal compares nodes
-func Equal(a, b *Node) bool {
-	if a.IPv4Address != b.IPv4Address {
+func (n *Node) Equal(b *Node) bool {
+	n.mu.Lock()
+	b.mu.Lock()
+	defer n.mu.Unlock()
+	defer b.mu.Unlock()
+
+	if !n.ipv4.Equal(b.ipv4) {
+		return false
+	}
+	if !n.ipv6.Equal(b.ipv6) {
 		return false
 	}
 
-	if a.IPv6Address != b.IPv6Address {
+	// Check if the Values map is the same
+	if len(n.Values) != len(b.Values) {
 		return false
 	}
-
-	if a.MulticastAddress != b.MulticastAddress {
-		return false
+	for k := range n.Values {
+		v1 := n.Values[k]
+		v2 := b.Values[k]
+		if v1 != v2 {
+			return false
+		}
 	}
-
-	// if a.SrcIP.String() != b.SrcIP.String() {
-	// 	return false
-	// }
 
 	return true
 }
 
 // GobEncode gob interface
 func (n *Node) GobEncode() ([]byte, error) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+
 	w := new(bytes.Buffer)
 	encoder := gob.NewEncoder(w)
-	err := encoder.Encode(n.IPv4Address)
-	if err != nil {
+
+	if err := encoder.Encode(n.SendInterval); err != nil {
 		return nil, err
 	}
 
-	err = encoder.Encode(n.IPv6Address)
-	if err != nil {
+	if err := encoder.Encode(n.ipv4); err != nil {
 		return nil, err
 	}
 
-	err = encoder.Encode(n.MulticastAddress)
-	if err != nil {
+	if err := encoder.Encode(n.ipv6); err != nil {
+		return nil, err
+	}
+
+	if err := encoder.Encode(n.Values); err != nil {
 		return nil, err
 	}
 
@@ -78,87 +105,55 @@ func (n *Node) GobEncode() ([]byte, error) {
 
 // GobDecode gob interface
 func (n *Node) GobDecode(buf []byte) error {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+
 	r := bytes.NewBuffer(buf)
 	decoder := gob.NewDecoder(r)
-	err := decoder.Decode(&n.IPv4Address)
-	if err != nil {
+
+	if err := decoder.Decode(&n.SendInterval); err != nil {
 		return err
 	}
-	err = decoder.Decode(&n.IPv6Address)
-	if err != nil {
+
+	if err := decoder.Decode(&n.ipv4); err != nil {
 		return err
 	}
-	return decoder.Decode(&n.MulticastAddress)
+
+	if err := decoder.Decode(&n.ipv6); err != nil {
+		return err
+	}
+
+	return decoder.Decode(&n.Values)
 }
 
-// Listen enables the node to listen for other Pings from multicast sends
-func (n *Node) Listen(results chan<- *Node) error {
-	// Start monitoring for multicast
-	if n.MulticastAddress == "" {
-		return errors.New("must have multicast address")
-	}
+// Done returns a channel that can be used to wait till Multicast is stopped
+func (n *Node) Done() <-chan struct{} {
+	return n.mc.Done()
+}
 
-	// m := multicast.NewMulticast(n.MulticastAddress)
-	m := &multicast.Multicast{
-		Address:      n.MulticastAddress,
-		Retries:      3,
-		Timeout:      3,
-		StopPingChan: make(chan struct{}),
-		StopPongChan: make(chan struct{}),
-	}
-	n.multicast = m
+// RegisterCh returns a channel to know if the node should stay registered
+func (n *Node) RegisterCh() <-chan struct{} {
+	n.init()
+	return n.registerCh
+}
 
-	n.shutdownChan = make(chan struct{})
-
-	respChan := make(chan multicast.Response)
-
-	go n.multicast.Pong(respChan, n.ErrChan)
-
-	go func() {
-		for {
-			select {
-			case resp := <-respChan:
-				// fmt.Println("Received Ping from:", resp.SrcIP, "they said:", string(resp.Payload))
-
-				buffer := bytes.NewBuffer(resp.Payload)
-				rn := new(Node)
-				dec := gob.NewDecoder(buffer)
-				err := dec.Decode(rn)
-				if err != nil {
-					// fmt.Println("Node callback error:", err)
-					n.ErrChan <- err
-				}
-
-				fmt.Println("is node coorect", rn)
-
-				// Set the source address
-				rn.SrcIP = resp.SrcIP
-
-				// Only proceed if the received node (rn) isn't equal to the node listening (n)
-				if Equal(n, rn) {
-					continue
-				}
-
-				results <- rn
-				// callback(rn)
-				// if err := callback(rn); err == nil {
-				// 	return
-				// }
-			case <-n.shutdownChan:
-				return
-			}
-
-		}
-	}()
-
-	return nil
+// KeepRegistered sends an anonymous struct{} to registeredChan to indicate the node should stay registered
+func (n *Node) KeepRegistered() {
+	n.init()
+	n.registerCh <- struct{}{}
 }
 
 // Multicast start the mulicast ping
-func (n *Node) Multicast() error {
-	if n.multicast == nil {
-		return errors.New("No multicast created for node.")
+func (n *Node) Multicast(ctx context.Context, multicastAddress string) error {
+	n.mu.Lock()
+	n.ipv4 = localIPv4()
+	n.ipv6 = localIPv6()
+
+	if n.SendInterval.Seconds() == float64(0) {
+		n.SendInterval = 1 * time.Second // default to 1 second
 	}
+
+	n.mu.Unlock()
 
 	// Encode node to be sent via multicast
 	buf := new(bytes.Buffer)
@@ -168,93 +163,95 @@ func (n *Node) Multicast() error {
 		return err
 	}
 
-	go n.multicast.Ping(buf.Bytes(), n.ErrChan)
-
-	return nil
-}
-
-// StopMulticast stops the node from pinging
-func (n *Node) StopMulticast() error {
-	if n.multicast == nil {
-		return errors.New("No multicast created for node.")
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.mc = &multicast.Multicast{Address: multicastAddress}
+	if err := n.mc.Send(ctx, n.SendInterval, buf.Bytes()); err != nil {
+		return err
 	}
 
-	n.multicast.StopPing()
-
 	return nil
 }
 
-// Shutdown stops the serving of multicast pings
-func (n *Node) Shutdown() error {
-	if n.multicast == nil {
-		return errors.New("No multicast created for node.")
+// Stop closes the StopCh to stop multicast sending
+func (n *Node) Stop() {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.mc.Stop()
+}
+
+// IPv4 getter for ipv4Address
+func (n *Node) IPv4() net.IP {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return n.ipv4
+}
+
+// IPv6 getter for ipv6Address
+func (n *Node) IPv6() net.IP {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return n.ipv6
+}
+
+// localIPv4 return the ipv4 address of the computer
+// If it can't get the local ip it returns 127.0.0.1
+// https://github.com/forestgiant/netutil
+func localIPv4() net.IP {
+	loopback := net.ParseIP("127.0.0.1")
+
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		return loopback
 	}
 
-	close(n.shutdownChan)
-	n.multicast.StopPong()
-	n.multicast.StopPing()
+	for _, addr := range addrs {
+		// check the address type and make sure it's not loopback
+		if ipnet, ok := addr.(*net.IPNet); ok {
+			if !ipnet.IP.IsLoopback() {
+				if ipnet.IP.To4() != nil {
+					return ipnet.IP.To4()
+				}
+			}
+		}
+	}
 
-	return nil
-	// fmt.Println("shutdown the ping pong!")
+	return loopback
 }
 
-// Notify pings other nodes using multicast to let them know it's here
-// func (n *Node) Notify() {
-// 	m := multicast.NewMulticast(n.MulticastAddress)
-// 	n.multicast = m
-// 	go n.multicast.Ping()
-// }
+// localIPv6 return the ipv6 address of the computer
+// If it can't get the local ip it returns net.IPv6loopback
+// https://github.com/forestgiant/netutil
+func localIPv6() net.IP {
+	loopback := net.IPv6loopback
 
-// func (n *Node) callback(listenCallback ListenCallback) multicast.PongCallback {
-// 	return func(payload []byte, srcIP net.IP) error {
-// 		// // Let's make sure the ping is coming from a different interface than us
-// 		// intfs, err := net.Interfaces()
-// 		// if err != nil {
-// 		// 	return err
-// 		// }
-// 		//
-// 		// for _, intf := range intfs {
-// 		// 	// If the interface is a loopback or doesn't have multicasting let's skip it
-// 		// 	if strings.Contains(intf.Flags.String(), net.FlagLoopback.String()) || !strings.Contains(intf.Flags.String(), net.FlagMulticast.String()) {
-// 		// 		continue
-// 		// 	}
-// 		//
-// 		// 	// Now let's check if the interface has an ipv6 address
-// 		// 	var addrs []net.Addr
-// 		// 	addrs, err = intf.Addrs()
-// 		// 	if err != nil {
-// 		// 		continue
-// 		// 	}
-// 		//
-// 		// 	for _, address := range addrs {
-// 		// 		if ipnet, ok := address.(*net.IPNet); ok {
-// 		// 			if ipnet.IP.To4() == nil {
-// 		// 				if ipnet.IP.Equal(srcIP) {
-// 		// 					if !n.RespondLocalPing {
-// 		// 						return errors.New("src and node addresses are the same")
-// 		// 					}
-// 		// 				}
-// 		// 			}
-// 		// 		}
-// 		// 	}
-// 		// }
-//
-// 		// fmt.Println("payload?", payload)
-// 		buffer := bytes.NewBuffer(payload)
-// 		n := new(Node)
-// 		dec := gob.NewDecoder(buffer)
-// 		err := dec.Decode(n)
-// 		if err != nil {
-// 			// fmt.Println("Node callback error:", err)
-// 			return err
-// 		}
-// 		// fmt.Println(n, err)
-//
-// 		// Set the source address
-// 		// n.SrcAddress = srcIP
-//
-// 		listenCallback(n)
-//
-// 		return nil
-// 	}
-// }
+	intfs, err := net.Interfaces()
+	if err != nil {
+		return loopback
+	}
+
+	for _, intf := range intfs {
+		// If the interface is a loopback or doesn't have multicasting let's skip it
+		if strings.Contains(intf.Flags.String(), net.FlagLoopback.String()) || !strings.Contains(intf.Flags.String(), net.FlagMulticast.String()) {
+			continue
+		}
+
+		// Now let's check if the interface has an ipv6 address
+		addrs, err := intf.Addrs()
+		if err != nil {
+			continue
+		}
+
+		for _, address := range addrs {
+			if ipnet, ok := address.(*net.IPNet); ok {
+				if !ipnet.IP.IsLoopback() {
+					if ipnet.IP.To4() == nil {
+						return ipnet.IP
+					}
+				}
+			}
+		}
+	}
+
+	return loopback
+}

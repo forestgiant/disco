@@ -1,105 +1,166 @@
 package disco
 
 import (
+	"context"
+	"errors"
 	"fmt"
-	"os"
+	"sync"
 	"testing"
+	"time"
 
 	"gitlab.fg/go/disco/node"
 )
 
-var d *Disco
+var testMulticastAddress = "[ff12::9000]:30000"
 
-const testMulticastAddress = "[ff12::9000]:21090"
+func Test_register(t *testing.T) {
+	d := &Disco{}
+	n := &node.Node{}
+	r := make(chan *node.Node)
+	closeCh := make(chan struct{})
+	errCh := make(chan error)
+	go func() {
+		defer close(closeCh)
+		select {
+		case <-r:
+			// Make sure we have 1 member
+			if len(d.Members()) != 1 {
+				t.Errorf("TestDeregister: One node should be registered. Received: %b, Should be: %b \n",
+					len(d.Members()), 0)
+			}
 
-func TestMain(m *testing.M) {
-	var err error
-	d, err = NewDisco()
-	if err != nil {
-		fmt.Println("NewDisco errored")
-		os.Exit(1)
+			// Now deregister and make sure we have 0 members
+			d.deregister(n)
+			if len(d.Members()) != 0 {
+				t.Errorf("TestDeregister: All nodes should be deregistered. Received: %b, Should be: %b \n",
+					len(d.Members()), 0)
+			}
+		case <-time.After(100 * time.Millisecond):
+			errCh <- errors.New("Test_register timed out")
+		}
+	}()
+
+	d.register(r, n)
+
+	// Block until closeCh is closed on a timed out happens
+	for {
+		select {
+		case <-closeCh:
+			return
+		case err := <-errCh:
+			t.Fatal(err)
+		}
 	}
-
-	// Run all test
-	t := m.Run()
-
-	os.Exit(t)
-}
-
-func TestRegister(t *testing.T) {
-	n := new(node.Node)
-	n.MulticastAddress = testMulticastAddress
-	n.IPv4Address = "127.0.0.1"
-
-	waitChan := make(chan struct{})
-
-	go func() {
-		d.Register(n)
-
-		nodes := d.GetRegistered()
-		r := nodes[0]
-
-		if r.MulticastAddress != n.MulticastAddress {
-			t.Errorf("TestRegister: MulticastAddress not equal. Received: %s, Should be: %s \n",
-				r.MulticastAddress, n.MulticastAddress)
-		}
-
-		close(waitChan)
-	}()
-
-	// Wait till register is complete
-	<-waitChan
-
-	waitChan = make(chan struct{})
-	// Now let's Deregister the node
-	go func() {
-		d.Deregister(n)
-		nodes := d.GetRegistered()
-		if len(nodes) != 0 {
-			t.Errorf("TestDeregister: All nodes should be deregistered. Received: %b, Should be: %b \n",
-				len(nodes), 0)
-		}
-
-		close(waitChan)
-	}()
-
-	// Wait till deregister is complete
-	<-waitChan
 }
 
 func TestDiscover(t *testing.T) {
-	// Make sure we have a node registered for testing
-	n := &node.Node{
-		MulticastAddress: testMulticastAddress,
-		IPv4Address:      "9.0.0.1",
+	var tests = []struct {
+		n         *node.Node
+		shouldErr bool
+	}{
+		{&node.Node{}, false},
+		{&node.Node{SendInterval: 2 * time.Second}, false},
 	}
-	d.Register(n)
 
-	n = &node.Node{
-		MulticastAddress: testMulticastAddress,
-		IPv4Address:      "8.8.0.1",
+	ctx, cancelFunc := context.WithCancel(context.Background())
+	defer cancelFunc() // stop disco
+	wg := &sync.WaitGroup{}
+	d := &Disco{}
+
+	discoveredChan, err := d.Discover(ctx, testMulticastAddress)
+	if err != nil {
+		t.Fatal(err)
 	}
-	d.Register(n)
-	waitChan := make(chan struct{})
-
-	discoveredChan := d.Discover()
 
 	go func() {
+		// Select will block until a result comes in
 		for {
 			select {
-			case n := <-discoveredChan:
-				fmt.Println("Found a node!!!!", n)
-				// close(waitChan)
-				// case err := <-errChan:
-				// 	fmt.Println("Error!", err)
+			case rn := <-discoveredChan:
+				for _, test := range tests {
+					if rn.Equal(test.n) {
+						test.n.Stop() // stop the node from multicasting
+						wg.Done()
+					}
+				}
+			case <-ctx.Done():
+				return
 			}
 		}
 	}()
 
-	<-waitChan
+	// Multicast nodes so they can be discovered
+	for _, test := range tests {
+		// Add to the WaitGroup for each test that should pass and add it to the nodes to verify
+		if !test.shouldErr {
+			wg.Add(1)
+
+			if err := test.n.Multicast(ctx, testMulticastAddress); err != nil {
+				t.Fatal("Multicast error", err)
+			}
+		} else {
+			if err := test.n.Multicast(ctx, testMulticastAddress); err == nil {
+				t.Fatal("Multicast of node should fail", err)
+			}
+		}
+
+	}
+
+	wg.Wait()
 }
 
-func TestStop(t *testing.T) {
-	// Stop everything!
-	d.Stop()
+func TestDiscoverSameNode(t *testing.T) {
+	var tests = []struct {
+		n         *node.Node
+		shouldErr bool
+	}{
+		{&node.Node{}, false},
+	}
+
+	ctx, cancelFunc := context.WithCancel(context.Background())
+	defer cancelFunc() // stop disco
+	wg := &sync.WaitGroup{}
+	d := &Disco{}
+	discoveredChan, err := d.Discover(ctx, testMulticastAddress)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	go func() {
+		// Select will block until a result comes in
+		for {
+			select {
+			case rn := <-discoveredChan:
+				for _, test := range tests {
+					if rn.Equal(test.n) {
+						test.n.Stop() // stop the node from multicasting
+						wg.Done()
+					} else {
+						fmt.Println("not equal")
+					}
+				}
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+
+	// Multicast nodes so they can be discovered
+	for _, test := range tests {
+		// Add to the WaitGroup for each test that should pass and add it to the nodes to verify
+		if !test.shouldErr {
+			wg.Add(1)
+
+			if err := test.n.Multicast(ctx, testMulticastAddress); err != nil {
+				t.Fatal("Multicast error", err)
+			}
+		} else {
+			if err := test.n.Multicast(ctx, testMulticastAddress); err == nil {
+				t.Fatal("Multicast of node should fail", err)
+			}
+		}
+
+	}
+
+	wg.Wait()
 }

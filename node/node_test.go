@@ -1,12 +1,124 @@
 package node
 
 import (
+	"bytes"
+	"context"
+	"encoding/gob"
+	"errors"
 	"fmt"
+	"net"
+	"strings"
 	"sync"
 	"testing"
+	"time"
+
+	"gitlab.fg/go/disco/multicast"
 )
 
-const testMulticastAddress = "[ff12::9000]:21090"
+const testMulticastAddress = "[ff12::9000]:30002"
+
+func Test_init(t *testing.T) {
+	n := &Node{}
+	n.init()
+
+	if n.registerCh == nil {
+		t.Fatal("registerCh should not be nil after init() method is called")
+	}
+}
+
+func TestString(t *testing.T) {
+	localIPv4 := localIPv4()
+	localIPv6 := localIPv6()
+
+	var tests = []struct {
+		n         *Node
+		s         []string
+		shouldErr bool
+	}{
+		{&Node{}, []string{""}, true},
+		{&Node{}, []string{"IPv4: <nil>", "IPv6: <nil>", "Values: map[]"}, false},
+		{&Node{ipv4: localIPv4}, []string{fmt.Sprintf("IPv4: %s", localIPv4), "IPv6: <nil>", "Values: map[]"}, false},
+		{&Node{ipv6: localIPv6}, []string{"IPv4: <nil>", fmt.Sprintf("IPv6: %s", localIPv6), "Values: map[]"}, false},
+		{&Node{ipv4: localIPv4, ipv6: localIPv6}, []string{fmt.Sprintf("IPv4: %s", localIPv4), fmt.Sprintf("IPv6: %s", localIPv6), "Values: map[]"}, false},
+		{&Node{Values: map[string]string{"foo": "v1", "bar": "v2"}, ipv4: localIPv4, ipv6: localIPv6},
+			[]string{fmt.Sprintf("IPv4: %s", localIPv4), fmt.Sprintf("IPv6: %s", localIPv6), "Values:", "foo:v1", "bar:v2"}, false},
+	}
+
+	for _, test := range tests {
+		actual := fmt.Sprint(test.n)
+		if !test.shouldErr {
+			for _, s := range test.s {
+				if !strings.Contains(actual, s) {
+					t.Errorf("Stringer failed. Received %s, should be: %s", actual, test.s)
+				}
+			}
+		} else {
+			for _, s := range test.s {
+				if !strings.Contains(actual, s) {
+					t.Errorf("Stringer should fail. Received %s, should be: %s", actual, test.s)
+				}
+			}
+		}
+	}
+}
+
+func TestRegisterCh(t *testing.T) {
+	n := &Node{}
+	if n.RegisterCh() != n.registerCh {
+		t.Fatal("RegisterCh() method should return n.registerCh")
+	}
+}
+
+func TestKeepRegistered(t *testing.T) {
+	n := &Node{}
+	closeCh := make(chan struct{})
+	errCh := make(chan error)
+	go func() {
+		defer close(closeCh)
+		select {
+		case <-n.RegisterCh():
+		case <-time.After(100 * time.Millisecond):
+			errCh <- errors.New("Test_register timed out")
+		}
+	}()
+
+	n.KeepRegistered()
+
+	// Block until closeCh is closed on a timed out happens
+	for {
+		select {
+		case <-closeCh:
+			return
+		case err := <-errCh:
+			t.Fatal(err)
+		}
+	}
+}
+
+func TestIPGetters(t *testing.T) {
+	localIPv4 := localIPv4()
+	localIPv6 := localIPv6()
+
+	var tests = []struct {
+		n    *Node
+		ipv4 net.IP
+		ipv6 net.IP
+	}{
+		{&Node{}, nil, nil},
+		{&Node{}, []byte{}, []byte{}},
+		{&Node{ipv4: localIPv4}, localIPv4, []byte{}},
+		{&Node{ipv6: localIPv6}, []byte{}, localIPv6},
+		{&Node{ipv4: localIPv4, ipv6: localIPv6}, localIPv4, localIPv6},
+	}
+
+	for _, test := range tests {
+		ipv4 := test.n.IPv4()
+		ipv6 := test.n.IPv6()
+		if !test.n.ipv4.Equal(ipv4) || !test.n.ipv6.Equal(ipv6) {
+			t.Error("IP Getter failed", test.n, ipv4, ipv6)
+		}
+	}
+}
 
 func TestEqual(t *testing.T) {
 	var tests = []struct {
@@ -15,89 +127,180 @@ func TestEqual(t *testing.T) {
 		expected bool
 	}{
 		{&Node{}, &Node{}, true},
-		{&Node{IPv4Address: "127.0.0.1"}, &Node{IPv4Address: "127.0.0.1"}, true},
-		{&Node{IPv4Address: "127.0.0.1"}, &Node{IPv4Address: ""}, false},
-		{&Node{IPv6Address: "fe80::aebc:32ff:fe93:4365"}, &Node{IPv6Address: "fe80::aebc:32ff:fe93:4365"}, true},
-		{&Node{IPv6Address: "fe80::aebc:32ff:fe93:4365"}, &Node{IPv6Address: ""}, false},
-		{&Node{MulticastAddress: "[ff12::9000]:21090"}, &Node{MulticastAddress: "[ff12::9000]:21090"}, true},
-		{&Node{MulticastAddress: "[ff12::9000]:21090"}, &Node{MulticastAddress: ""}, false},
+		{&Node{Values: map[string]string{"foo": "v1", "bar": "v2"}}, &Node{Values: map[string]string{"foo": "v1", "bar": "v2"}}, true},
+		{&Node{Values: map[string]string{"foo": "v1", "bar": "v2"}}, &Node{}, false},
 	}
 
 	for _, test := range tests {
-		actual := Equal(test.a, test.b)
+		actual := test.a.Equal(test.b)
 		if actual != test.expected {
 			t.Errorf("Compare failed %v should equal %v.", test.a, test.b)
 		}
 	}
 }
 
-func TestStartPong(t *testing.T) {
-	// Setup two test nodes that wait to listen for the others
-	// If one hear the other it decrements the WaitGroup
-	n1 := &Node{
-		IPv4Address:      "127.0.0.1",
-		MulticastAddress: testMulticastAddress,
-		ErrChan:          make(chan error),
+func TestEncodeDecod(t *testing.T) {
+	var tests = []struct {
+		n *Node
+	}{
+		{&Node{SendInterval: 1 * time.Second}},
+		{&Node{Values: map[string]string{"foo": "v1", "bar": "v2"}, SendInterval: 1 * time.Second}},
+		{&Node{Values: map[string]string{"someKey": "someValue"}, SendInterval: 1 * time.Second}},
+		{&Node{Values: map[string]string{"anotherKey": "anotherValue"}, SendInterval: 1 * time.Second}},
 	}
 
-	// create a second test node
-	n2 := &Node{
-		IPv4Address:      "9.0.0.1",
-		MulticastAddress: testMulticastAddress,
-		ErrChan:          make(chan error),
+	for _, test := range tests {
+		// Encode node
+		buf := new(bytes.Buffer)
+		enc := gob.NewEncoder(buf)
+		err := enc.Encode(test.n)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		// Decode
+		rn := &Node{}
+		dec := gob.NewDecoder(buf)
+		if err := dec.Decode(rn); err != nil {
+			t.Fatal(err)
+		}
+
+		if !test.n.Equal(rn) {
+			t.Fatalf("test.n: %s should equal rn: %s", test.n, rn)
+		}
+	}
+}
+
+func TestMulticast(t *testing.T) {
+	var tests = []struct {
+		n                *Node
+		multicastAddress string
+		shouldErr        bool
+	}{
+		{&Node{SendInterval: 1 * time.Second}, "[ff12::9000]:21090", false},
+		{&Node{Values: map[string]string{"foo": "v1", "bar": "v2"}, SendInterval: 1 * time.Second}, "[ff12::9000]:21090", false},
+		{&Node{Values: map[string]string{"someKey": "someValue"}, SendInterval: 1 * time.Second}, "[ff12::9000]:21090", false},
+		{&Node{Values: map[string]string{"anotherKey": "anotherValue"}, SendInterval: 1 * time.Second}, ":21090", true},
 	}
 
-	wg := new(sync.WaitGroup)
+	ctx, cancelFunc := context.WithCancel(context.Background())
+	errCh := make(chan error, 1)
+	wg := &sync.WaitGroup{}
 
-	// Listen for n2 Multicast
-	results := make(chan *Node)
-	n1.Listen(results)
-	wg.Add(1)
+	// Perform our test in a new goroutine so we don't block
 	go func() {
-		defer wg.Done()
+		// Listen for nodes
+		listener := &multicast.Multicast{Address: testMulticastAddress}
+		results, err := listener.Listen(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
 
-		// Select will block until a result comes in
-		select {
-		case rn := <-results:
-			fmt.Println("this node received a ping from", rn)
-			// listen for n2
-			if Equal(rn, n2) {
-				fmt.Println("stop rn", n2)
-				if err := n2.StopMulticast(); err != nil {
-					t.Error(err)
+		// Check if nodes received are the nodes we are testing
+		go func() {
+			for {
+				select {
+				case resp := <-results:
+					buffer := bytes.NewBuffer(resp.Payload)
+
+					rn := &Node{}
+					dec := gob.NewDecoder(buffer)
+					if err := dec.Decode(rn); err != nil {
+						errCh <- err
+					}
+
+					// Check if any nodes coming in are the ones we are waiting for
+					for _, test := range tests {
+						if rn.Equal(test.n) {
+							test.n.Stop() // stop the node from multicasting
+							wg.Done()
+						}
+					}
+				// case <-time.After(100 * time.Millisecond):
+				// 	errCh <- errors.New("TestMulticast timed out")
+				case <-ctx.Done():
+					return
+				case <-listener.Done():
+					return
 				}
 			}
-		}
-	}()
+		}()
 
-	n2.Listen(results)
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+		go func() {
+			for _, test := range tests {
+				// Add to the WaitGroup for each test that should pass and add it to the nodes to verify
+				if !test.shouldErr {
+					wg.Add(1)
 
-		// Select will block until a result comes in
-		select {
-		case rn := <-results:
-			fmt.Println("node2 received a ping from", rn)
-			// listen for n1
-			if Equal(rn, n1) {
-				fmt.Println("stop!!!", n1)
-				if err := n1.StopMulticast(); err != nil {
-					t.Error(err)
+					if err := test.n.Multicast(ctx, test.multicastAddress); err != nil {
+						t.Fatal("Multicast error", err)
+					}
+				} else {
+					if err := test.n.Multicast(ctx, test.multicastAddress); err == nil {
+						t.Fatal("Multicast of node should fail", err)
+					}
 				}
 			}
-		}
+		}()
+
+		wg.Wait()
+		listener.Stop()
+		cancelFunc()
 	}()
 
-	// Now ping both listening nodes
-	// Encode node to be sent via multicast
-	if err := n1.Multicast(); err != nil {
-		t.Fatal("n1 ping error", err)
+	// Block until the ctx is canceled or we receive an error, such as a timeout
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case err := <-errCh:
+			t.Fatal(err)
+		case <-time.After(100 * time.Millisecond):
+			t.Fatal("TestMulticast timed out")
+			return
+		}
 	}
-	if err := n2.Multicast(); err != nil {
-		t.Fatal("n2 ping error", err)
-	}
+}
 
-	fmt.Println("wait till we get a successful ping")
-	wg.Wait()
+func TestStop(t *testing.T) {
+	n := &Node{Values: map[string]string{"foo": "v1", "bar": "v2"}}
+
+	if err := n.Multicast(context.TODO(), testMulticastAddress); err != nil {
+		t.Fatal("Multicast error", err)
+	}
+	time.AfterFunc(100*time.Millisecond, func() { n.Stop() })
+	timeout := time.AfterFunc(200*time.Millisecond, func() { t.Fatal("TestStopChan timedout") })
+
+	// Block until the stopCh is closed
+	for {
+		select {
+		case <-n.Done():
+			timeout.Stop() // cancel the timeout
+			return
+		}
+	}
+}
+
+func TestLocalIPv4(t *testing.T) {
+	l := localIPv4()
+	_, err := net.InterfaceAddrs()
+	if err != nil {
+		// if there was an error with the interface
+		// then it should be loopback
+		if !l.IsLoopback() {
+			t.Error("LocalIP should be loopback")
+		}
+	}
+}
+
+func TestLocalIPv6(t *testing.T) {
+	l := localIPv6()
+	_, err := net.InterfaceAddrs()
+	if err != nil {
+		// if there was an error with the interface
+		// then it should be loopback
+		if !l.IsLoopback() {
+			t.Error("LocalIP should be loopback")
+		}
+	}
 }
