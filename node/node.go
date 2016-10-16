@@ -28,7 +28,7 @@ type Node struct {
 	ipv6         net.IP // set by localIPv4 function
 	ipv4         net.IP // set by localIPv6 function
 	mc           *multicast.Multicast
-	mu           sync.Mutex // protect ipv4, ipv6, mc, SendInterval, registerCh
+	mu           *sync.Mutex // protect ipv4, ipv6, mc, SendInterval, registerCh
 	registerCh   chan struct{}
 }
 
@@ -36,6 +36,9 @@ type Node struct {
 type Values map[string]string
 
 func (n *Node) init() {
+	if n.mu == nil {
+		n.mu = &sync.Mutex{}
+	}
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	if n.registerCh == nil {
@@ -49,6 +52,13 @@ func (n *Node) String() string {
 
 // Equal compares nodes
 func (n *Node) Equal(b *Node) bool {
+	if n.mu == nil {
+		n.mu = &sync.Mutex{}
+	}
+	if b.mu == nil {
+		b.mu = &sync.Mutex{}
+	}
+
 	n.mu.Lock()
 	b.mu.Lock()
 	defer n.mu.Unlock()
@@ -78,6 +88,10 @@ func (n *Node) Equal(b *Node) bool {
 
 // GobEncode gob interface
 func (n *Node) GobEncode() ([]byte, error) {
+	if n.mu == nil {
+		n.mu = &sync.Mutex{}
+	}
+
 	n.mu.Lock()
 	defer n.mu.Unlock()
 
@@ -105,6 +119,10 @@ func (n *Node) GobEncode() ([]byte, error) {
 
 // GobDecode gob interface
 func (n *Node) GobDecode(buf []byte) error {
+	if n.mu == nil {
+		n.mu = &sync.Mutex{}
+	}
+
 	n.mu.Lock()
 	defer n.mu.Unlock()
 
@@ -145,6 +163,9 @@ func (n *Node) KeepRegistered() {
 
 // Multicast start the mulicast ping
 func (n *Node) Multicast(ctx context.Context, multicastAddress string) error {
+	if n.mu == nil {
+		n.mu = &sync.Mutex{}
+	}
 	n.mu.Lock()
 	n.ipv4 = localIPv4()
 	n.ipv6 = localIPv6()
@@ -175,6 +196,9 @@ func (n *Node) Multicast(ctx context.Context, multicastAddress string) error {
 
 // Stop closes the StopCh to stop multicast sending
 func (n *Node) Stop() {
+	if n.mu == nil {
+		n.mu = &sync.Mutex{}
+	}
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	n.mc.Stop()
@@ -182,6 +206,9 @@ func (n *Node) Stop() {
 
 // IPv4 getter for ipv4Address
 func (n *Node) IPv4() net.IP {
+	if n.mu == nil {
+		n.mu = &sync.Mutex{}
+	}
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	return n.ipv4
@@ -189,6 +216,9 @@ func (n *Node) IPv4() net.IP {
 
 // IPv6 getter for ipv6Address
 func (n *Node) IPv6() net.IP {
+	if n.mu == nil {
+		n.mu = &sync.Mutex{}
+	}
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	return n.ipv6
