@@ -124,7 +124,8 @@ func (d *Disco) deregister(n *node.Node) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	// Remove node from regsistered
-	for i, m := range d.members {
+	for i := len(d.members) - 1; i >= 0; i-- {
+		m := d.members[i]
 		// make sure the node we sent matches
 		if m == n {
 			// remove it from the slice
