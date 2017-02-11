@@ -58,7 +58,7 @@ func TestDiscover(t *testing.T) {
 		n         *node.Node
 		shouldErr bool
 	}{
-		{&node.Node{}, false},
+		{&node.Node{Payload: []byte("Discover")}, false},
 		{&node.Node{SendInterval: 2 * time.Second}, false},
 	}
 
@@ -114,7 +114,7 @@ func TestDiscoverSameNode(t *testing.T) {
 		n         *node.Node
 		shouldErr bool
 	}{
-		{&node.Node{}, false},
+		{&node.Node{Payload: []byte("DiscoverSameNode")}, false},
 	}
 
 	ctx, cancelFunc := context.WithCancel(context.Background())

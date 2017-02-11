@@ -1,9 +1,7 @@
 package disco
 
 import (
-	"bytes"
 	"context"
-	"encoding/gob"
 	"errors"
 	"net"
 	"sync"
@@ -63,10 +61,10 @@ func (d *Disco) Discover(ctx context.Context, multicastAddress string) (<-chan *
 		for {
 			select {
 			case resp := <-respChan:
-				buffer := bytes.NewBuffer(resp.Payload)
-				rn := &node.Node{}
-				dec := gob.NewDecoder(buffer)
-				dec.Decode(rn)
+				rn, err := node.DecodeNode(resp.Payload)
+				if err != nil {
+					continue
+				}
 				rn.SrcIP = resp.SrcIP // set the source address
 				if d.addToMembers(rn) {
 					d.register(results, rn)

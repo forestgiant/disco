@@ -3,8 +3,9 @@ package node
 import (
 	"bytes"
 	"context"
-	"encoding/gob"
+	"errors"
 	"fmt"
+	"hash/adler32"
 	"net"
 	"strings"
 	"sync"
@@ -21,7 +22,8 @@ const (
 
 // Node represents a machine registered with Disco
 type Node struct {
-	Values       Values
+	// Values       Values
+	Payload      []byte // max 256 bytes
 	SrcIP        net.IP
 	SendInterval time.Duration
 	Action       int
@@ -44,7 +46,7 @@ func (n *Node) init() {
 }
 
 func (n *Node) String() string {
-	return fmt.Sprintf("IPv4: %s, IPv6: %s, Values: %s", n.ipv4, n.ipv6, n.Values)
+	return fmt.Sprintf("IPv4: %s, IPv6: %s, Payload: %s", n.ipv4, n.ipv6, n.Payload)
 }
 
 // Equal compares nodes
@@ -61,70 +63,148 @@ func (n *Node) Equal(b *Node) bool {
 		return false
 	}
 
-	// Check if the Values map is the same
-	if len(n.Values) != len(b.Values) {
+	// Check if the payloads are the same
+	if !bytes.Equal(n.Payload, b.Payload) {
 		return false
-	}
-	for k := range n.Values {
-		v1 := n.Values[k]
-		v2 := b.Values[k]
-		if v1 != v2 {
-			return false
-		}
 	}
 
 	return true
 }
 
-// GobEncode gob interface
-func (n *Node) GobEncode() ([]byte, error) {
-	n.mu.Lock()
-	defer n.mu.Unlock()
+// Encode will convert a Node to a byte slice
+// Checksum - 4 bytes
+// IPv4 value - 4 bytes
+// IPv6 value - 16 bytes
+// Payload (unknown length)
+func (n *Node) Encode() []byte {
+	payloadSize := len(n.Payload)
+	buf := make([]byte, 32+payloadSize)
 
-	w := new(bytes.Buffer)
-	encoder := gob.NewEncoder(w)
-
-	if err := encoder.Encode(n.SendInterval); err != nil {
-		return nil, err
+	// Add IPv4 to buffer
+	index := 4 // after checksum
+	for i, b := range n.IPv4().To4() {
+		buf[index+i] = b
 	}
 
-	if err := encoder.Encode(n.ipv4); err != nil {
-		return nil, err
+	// Add IPv6 to buffer
+	index = 8 // after ipv4
+	for i, b := range n.IPv6() {
+		buf[index+i] = b
 	}
 
-	if err := encoder.Encode(n.ipv6); err != nil {
-		return nil, err
+	// Add SendInterval int64
+	index = 24
+	for i := uint(0); i < 8; i++ {
+		buf[index+int(i)] = byte(n.SendInterval >> (i * 8))
 	}
 
-	if err := encoder.Encode(n.Values); err != nil {
-		return nil, err
+	// Add Payload to buffer
+	index = 32 // after SendInterval
+	for i, b := range n.Payload {
+		buf[index+i] = b
 	}
 
-	return w.Bytes(), nil
+	// Run a checksum on the existing buffer
+	checksum := adler32.Checksum(buf[4:])
+
+	// Add checksum to buffer
+	for i := uint(0); i < 4; i++ {
+		buf[int(i)] = byte(checksum >> (i * 8))
+	}
+
+	return buf
 }
 
-// GobDecode gob interface
-func (n *Node) GobDecode(buf []byte) error {
-	n.mu.Lock()
-	defer n.mu.Unlock()
-
-	r := bytes.NewBuffer(buf)
-	decoder := gob.NewDecoder(r)
-
-	if err := decoder.Decode(&n.SendInterval); err != nil {
-		return err
+// DecodeNode decodes the bytes and returns a *Node struct
+func DecodeNode(b []byte) (*Node, error) {
+	// Verify checksum
+	checksum := uint32(b[0]) | uint32(b[1])<<8 | uint32(b[2])<<16 | uint32(b[3])<<24
+	if checksum != adler32.Checksum(b[4:]) {
+		return nil, errors.New("checksum didn't match")
 	}
 
-	if err := decoder.Decode(&n.ipv4); err != nil {
-		return err
+	// Get ipv4
+	index := 4 // after checksum
+	ipv4 := make(net.IP, net.IPv4len)
+	for i := range ipv4 {
+		ipv4[i] = b[index+i]
 	}
 
-	if err := decoder.Decode(&n.ipv6); err != nil {
-		return err
+	// Get ipv6
+	index = 8 // after ipv4
+	ipv6 := make(net.IP, net.IPv6len)
+	for i := range ipv6 {
+		ipv6[i] = b[index+i]
 	}
 
-	return decoder.Decode(&n.Values)
+	// If the ips returned are unspecified then return nil
+	if ipv4.IsUnspecified() {
+		ipv4 = nil
+	}
+	if ipv6.IsUnspecified() {
+		ipv6 = nil
+	}
+
+	// Decode SendInterval
+	index = 24
+	sendInterval := uint64(b[index+0]) | uint64(b[index+1])<<8 | uint64(b[index+2])<<16 | uint64(b[index+3])<<24 |
+		uint64(b[index+4])<<32 | uint64(b[index+5])<<40 | uint64(b[index+6])<<48 | uint64(b[index+7])<<56
+
+	// Get payload
+	payload := b[32:]
+
+	return &Node{ipv4: ipv4, ipv6: ipv6, SendInterval: time.Duration(sendInterval), Payload: payload}, nil
 }
+
+// // GobEncode gob interface
+// func (n *Node) GobEncode() ([]byte, error) {
+// 	n.mu.Lock()
+// 	defer n.mu.Unlock()
+
+// 	w := new(bytes.Buffer)
+// 	encoder := gob.NewEncoder(w)
+
+// 	if err := encoder.Encode(n.SendInterval); err != nil {
+// 		return nil, err
+// 	}
+
+// 	if err := encoder.Encode(n.ipv4); err != nil {
+// 		return nil, err
+// 	}
+
+// 	if err := encoder.Encode(n.ipv6); err != nil {
+// 		return nil, err
+// 	}
+
+// 	if err := encoder.Encode(n.Payload); err != nil {
+// 		return nil, err
+// 	}
+
+// 	return w.Bytes(), nil
+// }
+
+// // GobDecode gob interface
+// func (n *Node) GobDecode(buf []byte) error {
+// 	n.mu.Lock()
+// 	defer n.mu.Unlock()
+
+// 	r := bytes.NewBuffer(buf)
+// 	decoder := gob.NewDecoder(r)
+
+// 	if err := decoder.Decode(&n.SendInterval); err != nil {
+// 		return err
+// 	}
+
+// 	if err := decoder.Decode(&n.ipv4); err != nil {
+// 		return err
+// 	}
+
+// 	if err := decoder.Decode(&n.ipv6); err != nil {
+// 		return err
+// 	}
+
+// 	return decoder.Decode(&n.Payload)
+// }
 
 // Done returns a channel that can be used to wait till Multicast is stopped
 func (n *Node) Done() <-chan struct{} {
@@ -156,17 +236,10 @@ func (n *Node) Multicast(ctx context.Context, multicastAddress string) error {
 	n.mu.Unlock()
 
 	// Encode node to be sent via multicast
-	buf := new(bytes.Buffer)
-	enc := gob.NewEncoder(buf)
-	err := enc.Encode(n)
-	if err != nil {
-		return err
-	}
-
 	n.mu.Lock()
-	defer n.mu.Unlock()
 	n.mc = &multicast.Multicast{Address: multicastAddress}
-	if err := n.mc.Send(ctx, n.SendInterval, buf.Bytes()); err != nil {
+	n.mu.Unlock()
+	if err := n.mc.Send(ctx, n.SendInterval, n.Encode()); err != nil {
 		return err
 	}
 
