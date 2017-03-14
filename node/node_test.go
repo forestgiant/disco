@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"gitlab.fg/go/disco/multicast"
+	"github.com/forestgiant/disco/multicast"
 )
 
 const testMulticastAddress = "[ff12::9000]:30002"

@@ -10,8 +10,8 @@ import (
 	"syscall"
 	"time"
 
-	"gitlab.fg/go/disco"
-	"gitlab.fg/go/disco/node"
+	"github.com/forestgiant/disco"
+	"github.com/forestgiant/disco/node"
 )
 
 // Discover other nodes with the disco package via multicast

@@ -7,8 +7,8 @@ import (
 	"sync"
 	"time"
 
-	"gitlab.fg/go/disco/multicast"
-	"gitlab.fg/go/disco/node"
+	"github.com/forestgiant/disco/multicast"
+	"github.com/forestgiant/disco/node"
 )
 
 // Disco represents a list of discovered devices

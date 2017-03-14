@@ -11,7 +11,7 @@ import (
 	"sync"
 	"time"
 
-	"gitlab.fg/go/disco/multicast"
+	"github.com/forestgiant/disco/multicast"
 )
 
 // Modes of a node being registered

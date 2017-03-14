@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"gitlab.fg/go/disco/node"
+	"github.com/forestgiant/disco/node"
 )
 
 var testMulticastAddress = "[ff12::9000]:30000"

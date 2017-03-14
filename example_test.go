@@ -7,7 +7,7 @@ import (
 	"net"
 	"time"
 
-	"gitlab.fg/go/disco/node"
+	"github.com/forestgiant/disco/node"
 )
 
 // Discover any other members on multicasting on an IPv6 multicast address
