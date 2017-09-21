@@ -24,42 +24,6 @@ func Test_init(t *testing.T) {
 	}
 }
 
-// func TestString(t *testing.T) {
-// 	localIPv4 := localIPv4()
-// 	localIPv6 := localIPv6()
-
-// 	var tests = []struct {
-// 		n         *Node
-// 		s         []string
-// 		shouldErr bool
-// 	}{
-// 		{&Node{}, []string{""}, true},
-// 		{&Node{}, []string{"IPv4: <nil>", "IPv6: <nil>", "Values: map[]"}, false},
-// 		{&Node{ipv4: localIPv4}, []string{fmt.Sprintf("IPv4: %s", localIPv4), "IPv6: <nil>", "Values: map[]"}, false},
-// 		{&Node{ipv6: localIPv6}, []string{"IPv4: <nil>", fmt.Sprintf("IPv6: %s", localIPv6), "Values: map[]"}, false},
-// 		{&Node{ipv4: localIPv4, ipv6: localIPv6}, []string{fmt.Sprintf("IPv4: %s", localIPv4), fmt.Sprintf("IPv6: %s", localIPv6), "Values: map[]"}, false},
-// 		{&Node{Values: map[string]string{"foo": "v1", "bar": "v2"}, ipv4: localIPv4, ipv6: localIPv6},
-// 			[]string{fmt.Sprintf("IPv4: %s", localIPv4), fmt.Sprintf("IPv6: %s", localIPv6), "Values:", "foo:v1", "bar:v2"}, false},
-// 	}
-
-// 	for _, test := range tests {
-// 		actual := fmt.Sprint(test.n)
-// 		if !test.shouldErr {
-// 			for _, s := range test.s {
-// 				if !strings.Contains(actual, s) {
-// 					t.Errorf("Stringer failed. Received %s, should be: %s", actual, test.s)
-// 				}
-// 			}
-// 		} else {
-// 			for _, s := range test.s {
-// 				if !strings.Contains(actual, s) {
-// 					t.Errorf("Stringer should fail. Received %s, should be: %s", actual, test.s)
-// 				}
-// 			}
-// 		}
-// 	}
-// }
-
 func TestEncodeDecode(t *testing.T) {
 	var tests = []struct {
 		n *Node
@@ -167,12 +131,10 @@ func TestMulticast(t *testing.T) {
 	var tests = []struct {
 		n                *Node
 		multicastAddress string
-		shouldErr        bool
 	}{
-		{&Node{SendInterval: 1 * time.Second}, "[ff12::9000]:21090", false},
-		{&Node{Payload: []byte("foo, bar"), SendInterval: 1 * time.Second}, "[ff12::9000]:21090", false},
-		{&Node{Payload: []byte("somekey, somevalue"), SendInterval: 1 * time.Second}, "[ff12::9000]:21090", false},
-		{&Node{Payload: []byte("another payload"), SendInterval: 1 * time.Second}, ":21090", true},
+		{&Node{SendInterval: 1 * time.Second}, "[ff12::9000]:21090"},
+		{&Node{Payload: []byte("foo, bar"), SendInterval: 1 * time.Second}, "[ff12::9000]:21090"},
+		{&Node{Payload: []byte("somekey, somevalue"), SendInterval: 1 * time.Second}, "[ff12::9000]:21090"},
 	}
 
 	ctx, cancelFunc := context.WithCancel(context.Background())
@@ -220,18 +182,9 @@ func TestMulticast(t *testing.T) {
 
 		go func() {
 			for _, test := range tests {
-				// Add to the WaitGroup for each test that should pass and add it to the nodes to verify
-				if !test.shouldErr {
-					wg.Add(1)
-
-					if err := test.n.Multicast(ctx, test.multicastAddress); err != nil {
-						t.Fatal("Multicast error", err)
-					}
-				} else {
-					if err := test.n.Multicast(ctx, test.multicastAddress); err == nil {
-						t.Fatal("Multicast of node should fail", err)
-					}
-				}
+				// Add to the WaitGroup for each test
+				wg.Add(1)
+				test.n.Multicast(ctx, test.multicastAddress)
 			}
 		}()
 
@@ -257,9 +210,7 @@ func TestMulticast(t *testing.T) {
 func TestStop(t *testing.T) {
 	n := &Node{Payload: []byte("foo, bar")}
 
-	if err := n.Multicast(context.TODO(), testMulticastAddress); err != nil {
-		t.Fatal("Multicast error", err)
-	}
+	n.Multicast(context.TODO(), testMulticastAddress)
 	time.AfterFunc(100*time.Millisecond, func() { n.Stop() })
 	timeout := time.AfterFunc(200*time.Millisecond, func() { t.Fatal("TestStopChan timedout") })
 

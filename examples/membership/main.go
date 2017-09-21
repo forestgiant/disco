@@ -52,9 +52,7 @@ func main() {
 
 	// Register ourselve as a node
 	n := &node.Node{Payload: []byte(ln.Addr().String()), SendInterval: 2 * time.Second}
-	if err := n.Multicast(ctx, multicastAddr); err != nil {
-		log.Fatal(err)
-	}
+	n.Multicast(ctx, multicastAddr)
 
 	// Listen for shutdown signal
 	sigs := make(chan os.Signal, 1)

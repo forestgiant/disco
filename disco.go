@@ -87,7 +87,7 @@ func (d *Disco) Discover(ctx context.Context, multicastAddress string) (<-chan *
 
 // register adds newly discovered nodes to the d.members slice and sending the node
 // over the result chan. Then it creates a new goroutine for each node that checks
-// if it can read on it's registerCh. If it can't within rn.SendInterval * 2 it derigesters
+// if it can read on it's registerCh. If it can't within rn.SendInterval * 3 it derigesters
 func (d *Disco) register(results chan *node.Node, rn *node.Node) {
 	// If it's new to the members send it as a result
 	rn.Action = node.RegisterAction
@@ -100,7 +100,7 @@ func (d *Disco) register(results chan *node.Node, rn *node.Node) {
 
 	go func() {
 		for {
-			t := time.NewTimer(rn.SendInterval * 2)
+			t := time.NewTimer(rn.SendInterval * 3)
 			select {
 			case <-rn.RegisterCh():
 				t.Stop()

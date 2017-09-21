@@ -32,6 +32,7 @@ type Node struct {
 	mc           *multicast.Multicast
 	mu           sync.Mutex // protect ipv4, ipv6, mc, SendInterval, registerCh
 	registerCh   chan struct{}
+	ticker       *time.Ticker
 }
 
 // Values stores any values passed to the node
@@ -156,56 +157,6 @@ func DecodeNode(b []byte) (*Node, error) {
 	return &Node{ipv4: ipv4, ipv6: ipv6, SendInterval: time.Duration(sendInterval), Payload: payload}, nil
 }
 
-// // GobEncode gob interface
-// func (n *Node) GobEncode() ([]byte, error) {
-// 	n.mu.Lock()
-// 	defer n.mu.Unlock()
-
-// 	w := new(bytes.Buffer)
-// 	encoder := gob.NewEncoder(w)
-
-// 	if err := encoder.Encode(n.SendInterval); err != nil {
-// 		return nil, err
-// 	}
-
-// 	if err := encoder.Encode(n.ipv4); err != nil {
-// 		return nil, err
-// 	}
-
-// 	if err := encoder.Encode(n.ipv6); err != nil {
-// 		return nil, err
-// 	}
-
-// 	if err := encoder.Encode(n.Payload); err != nil {
-// 		return nil, err
-// 	}
-
-// 	return w.Bytes(), nil
-// }
-
-// // GobDecode gob interface
-// func (n *Node) GobDecode(buf []byte) error {
-// 	n.mu.Lock()
-// 	defer n.mu.Unlock()
-
-// 	r := bytes.NewBuffer(buf)
-// 	decoder := gob.NewDecoder(r)
-
-// 	if err := decoder.Decode(&n.SendInterval); err != nil {
-// 		return err
-// 	}
-
-// 	if err := decoder.Decode(&n.ipv4); err != nil {
-// 		return err
-// 	}
-
-// 	if err := decoder.Decode(&n.ipv6); err != nil {
-// 		return err
-// 	}
-
-// 	return decoder.Decode(&n.Payload)
-// }
-
 // Done returns a channel that can be used to wait till Multicast is stopped
 func (n *Node) Done() <-chan struct{} {
 	return n.mc.Done()
@@ -223,33 +174,66 @@ func (n *Node) KeepRegistered() {
 	n.registerCh <- struct{}{}
 }
 
-// Multicast start the mulicast ping
-func (n *Node) Multicast(ctx context.Context, multicastAddress string) error {
+// Multicast start the multicast ping
+func (n *Node) Multicast(ctx context.Context, multicastAddress string) {
 	n.mu.Lock()
-	n.ipv4 = localIPv4()
-	n.ipv6 = localIPv6()
+	n.mc = &multicast.Multicast{Address: multicastAddress}
+
+	// Stop existing ticker if it exists
+	if n.ticker != nil {
+		n.ticker.Stop()
+	}
 
 	if n.SendInterval.Seconds() == float64(0) {
 		n.SendInterval = 1 * time.Second // default to 1 second
 	}
-
+	n.ticker = time.NewTicker(n.SendInterval)
 	n.mu.Unlock()
 
-	// Encode node to be sent via multicast
-	n.mu.Lock()
-	n.mc = &multicast.Multicast{Address: multicastAddress}
-	n.mu.Unlock()
-	if err := n.mc.Send(ctx, n.SendInterval, n.Encode()); err != nil {
-		return err
+	// Create send function
+	send := func() error {
+		n.mu.Lock()
+		n.ipv4 = localIPv4()
+		n.ipv6 = localIPv6()
+		n.mu.Unlock()
+
+		// Encode node to be sent via multicast
+		if err := n.mc.Send(ctx, n.Encode()); err != nil {
+			return fmt.Errorf("Disco error!!: %s", err)
+		}
+
+		return nil
 	}
 
-	return nil
+	go func() {
+		for {
+			select {
+			case <-n.ticker.C:
+				if err := send(); err != nil {
+					fmt.Println("Disco error!!", err)
+					continue
+				}
+			case <-n.Done():
+				n.ticker.Stop()
+				return
+			}
+		}
+	}()
+
+	// Call send right away
+	send()
+
+	return
 }
 
 // Stop closes the StopCh to stop multicast sending
 func (n *Node) Stop() {
 	n.mu.Lock()
 	defer n.mu.Unlock()
+
+	if n.ticker != nil {
+		n.ticker.Stop()
+	}
 	n.mc.Stop()
 }
 
