@@ -34,6 +34,12 @@ func TestEncodeDecode(t *testing.T) {
 			ipv6:    net.IPv6loopback,
 			Payload: []byte("payload"),
 		}},
+		{&Node{
+			ipv4:    net.ParseIP("127.0.0.1"),
+			ipv6:    net.IPv6loopback,
+			Action:  DeregisterAction,
+			Payload: []byte("payload 2"),
+		}},
 	}
 
 	for i, test := range tests {
@@ -44,7 +50,7 @@ func TestEncodeDecode(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		if !test.n.Equal(decodedN) {
+		if !test.n.Equal(decodedN) && test.n.Action == decodedN.Action {
 			t.Fatalf("Test %d failed. Nodes should be equal after decode. \n Received: %s, \n Expected: %s \n", i, decodedN, test.n)
 		}
 	}
@@ -139,6 +145,7 @@ func TestMulticast(t *testing.T) {
 
 	ctx, cancelFunc := context.WithCancel(context.Background())
 	errCh := make(chan error, 1)
+	var mErrCh <-chan error
 	wg := &sync.WaitGroup{}
 
 	// Perform our test in a new goroutine so we don't block
@@ -170,8 +177,6 @@ func TestMulticast(t *testing.T) {
 							wg.Done()
 						}
 					}
-				// case <-time.After(100 * time.Millisecond):
-				// 	errCh <- errors.New("TestMulticast timed out")
 				case <-ctx.Done():
 					return
 				case <-listener.Done():
@@ -184,7 +189,7 @@ func TestMulticast(t *testing.T) {
 			for _, test := range tests {
 				// Add to the WaitGroup for each test
 				wg.Add(1)
-				test.n.Multicast(ctx, test.multicastAddress)
+				mErrCh = test.n.Multicast(ctx, test.multicastAddress)
 			}
 		}()
 
@@ -198,6 +203,8 @@ func TestMulticast(t *testing.T) {
 		select {
 		case <-ctx.Done():
 			return
+		case err := <-mErrCh:
+			t.Fatal(err)
 		case err := <-errCh:
 			t.Fatal(err)
 		case <-time.After(100 * time.Millisecond):

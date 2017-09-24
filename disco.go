@@ -65,14 +65,23 @@ func (d *Disco) Discover(ctx context.Context, multicastAddress string) (<-chan *
 				if err != nil {
 					continue
 				}
-				rn.SrcIP = resp.SrcIP // set the source address
-				if d.addToMembers(rn) {
-					d.register(results, rn)
+
+				// If we receive a node registration then register or keep alive
+				if rn.Action == node.RegisterAction {
+					rn.SrcIP = resp.SrcIP // set the source address
+					if d.addToMembers(rn) {
+						d.register(results, rn)
+					} else {
+						if index := d.indexOfMember(rn); index != -1 {
+							d.mu.Lock()
+							d.members[index].KeepRegistered()
+							d.mu.Unlock()
+						}
+					}
 				} else {
-					if index := d.indexOfMember(rn); index != -1 {
-						d.mu.Lock()
-						d.members[index].KeepRegistered()
-						d.mu.Unlock()
+					// If we receive an explicit deregister multicast remove it and send to results
+					if d.deregister(rn) {
+						results <- rn
 					}
 				}
 			case <-ctx.Done():
@@ -85,9 +94,9 @@ func (d *Disco) Discover(ctx context.Context, multicastAddress string) (<-chan *
 	return results, nil
 }
 
-// register adds newly discovered nodes to the d.members slice and sending the node
+// register adds newly discovered nodes to the d.members slice and sends the node
 // over the result chan. Then it creates a new goroutine for each node that checks
-// if it can read on it's registerCh. If it can't within rn.SendInterval * 3 it derigesters
+// if it can read on it's registerCh. If it can't within rn.SendInterval * 3 it deregisters
 func (d *Disco) register(results chan *node.Node, rn *node.Node) {
 	// If it's new to the members send it as a result
 	rn.Action = node.RegisterAction
@@ -96,17 +105,18 @@ func (d *Disco) register(results chan *node.Node, rn *node.Node) {
 	d.members = append(d.members, rn)
 	d.mu.Unlock()
 
-	results <- rn
-
 	go func() {
 		for {
-			t := time.NewTimer(rn.SendInterval * 3)
+			rn.Mutex.Lock()
+			rn.Heartbeat = time.NewTimer(rn.SendInterval * 3)
+			rn.Mutex.Unlock()
+
 			select {
 			case <-rn.RegisterCh():
-				t.Stop()
+				rn.Heartbeat.Stop()
 				continue
-			case <-t.C:
-				t.Stop()
+			case <-rn.Heartbeat.C:
+				rn.Heartbeat.Stop()
 				// Deregister if it times out
 				rn.Action = node.DeregisterAction
 				d.deregister(rn)
@@ -115,21 +125,31 @@ func (d *Disco) register(results chan *node.Node, rn *node.Node) {
 			}
 		}
 	}()
+
+	results <- rn
 }
 
-// Deregister takes a node and removes it from the d.members slice
-func (d *Disco) deregister(n *node.Node) {
+// deregister takes a node and removes it from the d.members slice
+func (d *Disco) deregister(n *node.Node) bool {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+
 	// Remove node from regsistered
 	for i := len(d.members) - 1; i >= 0; i-- {
 		m := d.members[i]
 		// make sure the node we sent matches
-		if m == n {
-			// remove it from the slice
+		if m.Equal(n) {
+			// stop heartbeat and remove from member slice
+			m.Mutex.Lock()
+			m.Heartbeat.Stop()
+			m.Mutex.Unlock()
 			d.members = append(d.members[:i], d.members[i+1:]...)
+
+			return true
 		}
 	}
+
+	return false
 }
 
 // Check if the members slice already has the node if it doesn't add it

@@ -52,13 +52,15 @@ func main() {
 
 	// Register ourselve as a node
 	n := &node.Node{Payload: []byte(ln.Addr().String()), SendInterval: 2 * time.Second}
-	n.Multicast(ctx, multicastAddr)
+	errCh := n.Multicast(ctx, multicastAddr)
 
 	// Listen for shutdown signal
 	sigs := make(chan os.Signal, 1)
 	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
 		select {
+		case err := <-errCh:
+			fmt.Println(err)
 		case <-sigs:
 			cancelFunc()
 		}
