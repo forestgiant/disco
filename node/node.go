@@ -85,18 +85,21 @@ func (n *Node) Equal(b *Node) bool {
 // Send Interval - 8 bytes
 // Payload (unknown length)
 func (n *Node) Encode() []byte {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+
 	payloadSize := len(n.Payload)
 	buf := make([]byte, 33+payloadSize)
 
 	// Add IPv4 to buffer
 	index := 4 // after checksum
-	for i, b := range n.IPv4().To4() {
+	for i, b := range n.ipv4.To4() {
 		buf[index+i] = b
 	}
 
 	// Add IPv6 to buffer
 	index = 8 // after ipv4
-	for i, b := range n.IPv6() {
+	for i, b := range n.ipv6 {
 		buf[index+i] = b
 	}
 

@@ -42,17 +42,31 @@ func TestEncodeDecode(t *testing.T) {
 		}},
 	}
 
+	var mu sync.Mutex
 	for i, test := range tests {
-		bytes := test.n.Encode()
+		mu.Lock()
+		tn := test.n
+		bytes := tn.Encode()
+		mu.Unlock()
 
 		decodedN, err := DecodeNode(bytes)
 		if err != nil {
 			t.Fatal(err)
 		}
 
-		if !test.n.Equal(decodedN) && test.n.Action == decodedN.Action {
+		go func() {
+			mu.Lock()
+			if !tn.IPv4().Equal(tn.ipv4) {
+				t.Fatal()
+			}
+			mu.Unlock()
+		}()
+
+		mu.Lock()
+		if !tn.Equal(decodedN) && tn.Action == decodedN.Action {
 			t.Fatalf("Test %d failed. Nodes should be equal after decode. \n Received: %s, \n Expected: %s \n", i, decodedN, test.n)
 		}
+		mu.Unlock()
 	}
 }
 
