@@ -18,7 +18,7 @@ func TestListen(t *testing.T) {
 	}
 
 	sender := &Multicast{Address: testMulticastAddress}
-	if err := sender.Send(context.TODO(), 0, []byte{}); err != nil {
+	if err := sender.Send(context.TODO(), []byte{}); err != nil {
 		t.Fatal("Multicast Send should fail", err)
 	}
 
@@ -36,15 +36,20 @@ func TestListen(t *testing.T) {
 func TestSend(t *testing.T) {
 	var tests = []struct {
 		m         *Multicast
-		delay     time.Duration
 		payload   []byte
 		shouldErr bool
 	}{
-		{&Multicast{}, 0, nil, true},
-		{&Multicast{Address: testMulticastAddress}, 3, []byte("Hello TestSendAndListen"), false},
-		{&Multicast{Address: testMulticastAddress}, 0, []byte("Say hello again"), false},
-		{&Multicast{Address: testMulticastAddress}, 1, []byte("123412341234"), false},
+		{&Multicast{}, nil, true},
+		{&Multicast{Address: testMulticastAddress}, []byte("Hello TestSendAndListen"), false},
+		{&Multicast{Address: testMulticastAddress}, []byte("Say hello again"), false},
+		{&Multicast{Address: testMulticastAddress}, []byte("123412341234"), false},
 	}
+
+	var found = []struct {
+		m         *Multicast
+		payload   []byte
+		shouldErr bool
+	}{}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	wg := &sync.WaitGroup{}
@@ -65,9 +70,22 @@ func TestSend(t *testing.T) {
 			for {
 				select {
 				case resp := <-respCh:
-					// Check the slice of test to see if the response equals what is expected
 					for _, test := range tests {
+						skip := false
+						// Check the slice of test to see if the response equals what is expected
 						if bytes.Equal(resp.Payload, test.payload) {
+							// Skip if it's already been found
+							for _, f := range found {
+								if bytes.Equal(resp.Payload, f.payload) {
+									skip = true
+								}
+							}
+
+							if skip {
+								continue
+							}
+
+							found = append(found, test)
 							test.m.Stop()
 							wg.Done()
 						}
@@ -80,37 +98,19 @@ func TestSend(t *testing.T) {
 			}
 		}()
 
-		go func() {
-			for _, test := range tests {
-				if !test.shouldErr {
-					wg.Add(1)
-
-					if err := test.m.Send(ctx, test.delay, test.payload); err != nil {
-						t.Fatal("Multicast Send should fail", err)
-					}
-
-				} else {
-					if err := test.m.Send(ctx, test.delay, test.payload); err == nil {
-						t.Fatal("Multicast Send should fail", err)
-					}
+		for _, test := range tests {
+			if !test.shouldErr {
+				wg.Add(1)
+				if err := test.m.Send(ctx, test.payload); err != nil {
+					t.Fatal("Multicast Send failed", err)
 				}
 
-				// Check for any send errors
-				go func(test struct {
-					m         *Multicast
-					delay     time.Duration
-					payload   []byte
-					shouldErr bool
-				}) {
-					select { // Check to see if it errored
-					case <-test.m.Done():
-						if test.m.SendErr() != nil {
-							errCh <- test.m.SendErr()
-						}
-					}
-				}(test)
+			} else {
+				if err := test.m.Send(ctx, test.payload); err == nil {
+					t.Fatal("Multicast Send should fail", err)
+				}
 			}
-		}()
+		}
 
 		wg.Wait() // Block until all test multicasts are stopped
 		listener.Stop()
@@ -128,7 +128,7 @@ func TestSend(t *testing.T) {
 			}
 			return
 		case <-time.After(5000 * time.Millisecond):
-			t.Fatal("TestSendAndListen timed out")
+			t.Fatal("	 timed out")
 			return
 		}
 	}
@@ -175,35 +175,12 @@ func TestListenStop(t *testing.T) {
 	listener.Stop()
 }
 
-func TestSendStop(t *testing.T) {
-	m := &Multicast{Address: testMulticastAddress}
-
-	payload := []byte("Hello TestStop")
-	if err := m.Send(context.TODO(), 3, payload); err != nil {
-		t.Fatal("Send error", err)
-	}
-	time.AfterFunc(100*time.Millisecond, func() { m.Stop() })
-	timeout := time.AfterFunc(200*time.Millisecond, func() { t.Fatal("TestStopChan timedout") })
-
-	// Block until the stopCh is closed
-	for {
-		select {
-		case <-m.Done():
-			timeout.Stop() // cancel the timeout
-			if m.SendErr() != nil {
-				t.Fatal("m.Err():", m.SendErr())
-			}
-			return
-		}
-	}
-}
-
 func TestCtxCancelFunc(t *testing.T) {
 	m := &Multicast{Address: testMulticastAddress}
 
 	payload := []byte("Hello TestCtxCancelFunc")
 	ctx, cancel := context.WithCancel(context.Background())
-	if err := m.Send(ctx, 3, payload); err != nil {
+	if err := m.Send(ctx, payload); err != nil {
 		t.Fatal("Send error", err)
 	}
 	time.AfterFunc(100*time.Millisecond, func() { cancel() })

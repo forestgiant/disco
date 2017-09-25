@@ -27,11 +27,14 @@ type Node struct {
 	SrcIP        net.IP
 	SendInterval time.Duration
 	Action       int
+	Heartbeat    *time.Timer
+	Mutex        sync.Mutex
 	ipv6         net.IP // set by localIPv4 function
 	ipv4         net.IP // set by localIPv6 function
 	mc           *multicast.Multicast
 	mu           sync.Mutex // protect ipv4, ipv6, mc, SendInterval, registerCh
 	registerCh   chan struct{}
+	ticker       *time.Ticker
 }
 
 // Values stores any values passed to the node
@@ -46,15 +49,18 @@ func (n *Node) init() {
 }
 
 func (n *Node) String() string {
-	return fmt.Sprintf("IPv4: %s, IPv6: %s, Payload: %s", n.ipv4, n.ipv6, n.Payload)
+	return fmt.Sprintf("IPv4: %s, IPv6: %s, Action: %d, Payload: %s", n.ipv4, n.ipv6, n.Action, n.Payload)
 }
 
 // Equal compares nodes
 func (n *Node) Equal(b *Node) bool {
 	n.mu.Lock()
-	b.mu.Lock()
 	defer n.mu.Unlock()
-	defer b.mu.Unlock()
+
+	if n != b {
+		b.mu.Lock()
+		defer b.mu.Unlock()
+	}
 
 	if !n.ipv4.Equal(b.ipv4) {
 		return false
@@ -75,31 +81,44 @@ func (n *Node) Equal(b *Node) bool {
 // Checksum - 4 bytes
 // IPv4 value - 4 bytes
 // IPv6 value - 16 bytes
+// Action value - 1 byte
+// Send Interval - 8 bytes
 // Payload (unknown length)
 func (n *Node) Encode() []byte {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+
 	payloadSize := len(n.Payload)
-	buf := make([]byte, 32+payloadSize)
+	buf := make([]byte, 33+payloadSize)
 
 	// Add IPv4 to buffer
 	index := 4 // after checksum
-	for i, b := range n.IPv4().To4() {
+	for i, b := range n.ipv4.To4() {
 		buf[index+i] = b
 	}
 
 	// Add IPv6 to buffer
 	index = 8 // after ipv4
-	for i, b := range n.IPv6() {
+	for i, b := range n.ipv6 {
 		buf[index+i] = b
 	}
 
-	// Add SendInterval int64
+	// Add Action byte
 	index = 24
+	if n.Action == RegisterAction {
+		buf[index] = 0
+	} else {
+		buf[index] = 1
+	}
+
+	// Add SendInterval int64
+	index = 25
 	for i := uint(0); i < 8; i++ {
 		buf[index+int(i)] = byte(n.SendInterval >> (i * 8))
 	}
 
 	// Add Payload to buffer
-	index = 32 // after SendInterval
+	index = 33 // after SendInterval
 	for i, b := range n.Payload {
 		buf[index+i] = b
 	}
@@ -145,66 +164,23 @@ func DecodeNode(b []byte) (*Node, error) {
 		ipv6 = nil
 	}
 
+	// Get Action type
+	index = 24 // after ipv6
+	action := RegisterAction
+	if b[index] == 1 {
+		action = DeregisterAction
+	}
+
 	// Decode SendInterval
-	index = 24
+	index = 25
 	sendInterval := uint64(b[index+0]) | uint64(b[index+1])<<8 | uint64(b[index+2])<<16 | uint64(b[index+3])<<24 |
 		uint64(b[index+4])<<32 | uint64(b[index+5])<<40 | uint64(b[index+6])<<48 | uint64(b[index+7])<<56
 
 	// Get payload
-	payload := b[32:]
+	payload := b[33:]
 
-	return &Node{ipv4: ipv4, ipv6: ipv6, SendInterval: time.Duration(sendInterval), Payload: payload}, nil
+	return &Node{ipv4: ipv4, ipv6: ipv6, Action: action, SendInterval: time.Duration(sendInterval), Payload: payload}, nil
 }
-
-// // GobEncode gob interface
-// func (n *Node) GobEncode() ([]byte, error) {
-// 	n.mu.Lock()
-// 	defer n.mu.Unlock()
-
-// 	w := new(bytes.Buffer)
-// 	encoder := gob.NewEncoder(w)
-
-// 	if err := encoder.Encode(n.SendInterval); err != nil {
-// 		return nil, err
-// 	}
-
-// 	if err := encoder.Encode(n.ipv4); err != nil {
-// 		return nil, err
-// 	}
-
-// 	if err := encoder.Encode(n.ipv6); err != nil {
-// 		return nil, err
-// 	}
-
-// 	if err := encoder.Encode(n.Payload); err != nil {
-// 		return nil, err
-// 	}
-
-// 	return w.Bytes(), nil
-// }
-
-// // GobDecode gob interface
-// func (n *Node) GobDecode(buf []byte) error {
-// 	n.mu.Lock()
-// 	defer n.mu.Unlock()
-
-// 	r := bytes.NewBuffer(buf)
-// 	decoder := gob.NewDecoder(r)
-
-// 	if err := decoder.Decode(&n.SendInterval); err != nil {
-// 		return err
-// 	}
-
-// 	if err := decoder.Decode(&n.ipv4); err != nil {
-// 		return err
-// 	}
-
-// 	if err := decoder.Decode(&n.ipv6); err != nil {
-// 		return err
-// 	}
-
-// 	return decoder.Decode(&n.Payload)
-// }
 
 // Done returns a channel that can be used to wait till Multicast is stopped
 func (n *Node) Done() <-chan struct{} {
@@ -223,33 +199,84 @@ func (n *Node) KeepRegistered() {
 	n.registerCh <- struct{}{}
 }
 
-// Multicast start the mulicast ping
-func (n *Node) Multicast(ctx context.Context, multicastAddress string) error {
+// Multicast start the multicast ping
+func (n *Node) Multicast(ctx context.Context, multicastAddress string) <-chan error {
+	errCh := make(chan error, 1)
+
 	n.mu.Lock()
+	n.mc = &multicast.Multicast{Address: multicastAddress}
 	n.ipv4 = localIPv4()
 	n.ipv6 = localIPv6()
+
+	// Stop existing ticker if it exists
+	if n.ticker != nil {
+		n.ticker.Stop()
+	}
 
 	if n.SendInterval.Seconds() == float64(0) {
 		n.SendInterval = 1 * time.Second // default to 1 second
 	}
-
+	n.ticker = time.NewTicker(n.SendInterval)
 	n.mu.Unlock()
 
-	// Encode node to be sent via multicast
-	n.mu.Lock()
-	n.mc = &multicast.Multicast{Address: multicastAddress}
-	n.mu.Unlock()
-	if err := n.mc.Send(ctx, n.SendInterval, n.Encode()); err != nil {
-		return err
+	// Create send function
+	send := func() error {
+		// Check to see if IPv4 or 6 changed
+		currentIPv4 := localIPv4()
+		currentIPv6 := localIPv6()
+
+		if !n.ipv4.Equal(currentIPv4) || !n.ipv6.Equal(currentIPv6) {
+			// Multicast a deregister of previous node
+			n.mu.Lock()
+			n.Action = DeregisterAction
+			n.mu.Unlock()
+			if err := n.mc.Send(ctx, n.Encode()); err != nil {
+				return err
+			}
+			n.mu.Lock()
+			n.Action = RegisterAction
+			n.ipv4 = currentIPv4
+			n.ipv6 = currentIPv6
+			n.mu.Unlock()
+		}
+
+		// Encode node to be sent via multicast
+		if err := n.mc.Send(ctx, n.Encode()); err != nil {
+			return err
+		}
+
+		return nil
 	}
 
-	return nil
+	go func() {
+		for {
+			select {
+			case <-n.ticker.C:
+				if err := send(); err != nil {
+					errCh <- err
+					continue
+				}
+			case <-n.Done():
+				n.ticker.Stop()
+				return
+			}
+		}
+	}()
+
+	// Call send right away
+	send()
+
+	return errCh
 }
 
 // Stop closes the StopCh to stop multicast sending
 func (n *Node) Stop() {
 	n.mu.Lock()
 	defer n.mu.Unlock()
+
+	if n.ticker != nil {
+		n.ticker.Stop()
+	}
 	n.mc.Stop()
 }
 

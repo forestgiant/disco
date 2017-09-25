@@ -51,9 +51,7 @@ func RegisterNode() {
 	}
 	defer ln.Close()
 
-	// Register ourselve as a node
+	// Register ourself as a node by multicasting out
 	n := &node.Node{Payload: []byte(ln.Addr().String()), SendInterval: 2 * time.Second}
-	if err := n.Multicast(context.TODO(), multicastAddr); err != nil {
-		log.Fatal(err)
-	}
+	n.Multicast(context.TODO(), multicastAddr)
 }

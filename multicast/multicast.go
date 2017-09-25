@@ -16,7 +16,7 @@ type Multicast struct {
 	Address string
 	done    chan struct{}
 	sendErr error
-	mu      sync.Mutex // protect done and closed
+	mu      sync.RWMutex // protect done and closed
 	closed  bool
 }
 
@@ -62,6 +62,7 @@ func (m *Multicast) Done() <-chan struct{} {
 }
 
 // SendErr returns any send errors
+// TODO: Verify this is needed
 func (m *Multicast) SendErr() error {
 	return m.sendErr
 }
@@ -155,7 +156,7 @@ func (m *Multicast) Listen(ctx context.Context) (<-chan Response, error) {
 }
 
 // Send out to try to find others listening
-func (m *Multicast) Send(ctx context.Context, interval time.Duration, payload []byte) error {
+func (m *Multicast) Send(ctx context.Context, payload []byte) error {
 	if err := m.init(); err != nil {
 		return err
 	}
@@ -176,73 +177,63 @@ func (m *Multicast) Send(ctx context.Context, interval time.Duration, payload []
 		return err
 	}
 
-	send := func() {
-		// Track if any of the interfaces succesfully sent a message
-		success := 0
+	// Track if any of the interfaces succesfully sent a message
+	success := 0
 
-		// Set write control message to 1 so it can be forward by the router
-		// TODO: may need to up this if there are multiple routers on the network
-		// https://tools.ietf.org/html/rfc2460
-		wcm := &ipv6.ControlMessage{
-			HopLimit: 1,
-		}
-
-		// Create ipv6 packet conn
-		pconn := ipv6.NewPacketConn(conn)
-
-		// Loop through all the interfaces
-		for _, intf := range intfs {
-			// If the interface is a loopback or doesn't have multicasting let's skip it
-			if strings.Contains(intf.Flags.String(), net.FlagLoopback.String()) || !strings.Contains(intf.Flags.String(), net.FlagMulticast.String()) {
-				continue
-			}
-
-			// Now let's check if the interface has an ipv6 address
-			addrs, err := intf.Addrs()
-			if err != nil {
-				continue
-			}
-
-			if !containsIPv6(addrs) {
-				continue
-			}
-
-			wcm.IfIndex = intf.Index
-			pconn.SetWriteDeadline(time.Now().Add(time.Second))
-			_, err = pconn.WriteTo(bs, wcm, gaddr)
-			pconn.SetWriteDeadline(time.Time{})
-
-			if err != nil {
-				continue
-			}
-
-			// fmt.Println("Sending Ping on interface:", intf.Name, intf.Flags)
-			success++
-		}
-
-		if success <= 0 {
-			// stop the multicast if there was an error and set the error
-			m.sendErr = ErrNoIPv6
-			m.Stop()
-			return
-		}
+	// Set write control message to 1 so it can be forward by the router
+	// TODO: may need to up this if there are multiple routers on the network
+	// https://tools.ietf.org/html/rfc2460
+	wcm := &ipv6.ControlMessage{
+		HopLimit: 1,
 	}
 
-	go func() {
-		for {
-			select {
-			case <-time.After(interval):
-				send()
-			case <-ctx.Done():
-				return
-			case <-m.done:
-				return
-			}
-		}
-	}()
+	// Create ipv6 packet conn
+	pconn := ipv6.NewPacketConn(conn)
 
-	// call send right away
-	send()
+	// Loop through all the interfaces
+	for _, intf := range intfs {
+		m.mu.RLock()
+		if m.closed {
+			m.mu.RUnlock()
+			return nil
+		}
+		m.mu.RUnlock()
+
+		// If the interface is a loopback or doesn't have multicasting let's skip it
+		if strings.Contains(intf.Flags.String(), net.FlagLoopback.String()) || !strings.Contains(intf.Flags.String(), net.FlagMulticast.String()) {
+			continue
+		}
+
+		// Now let's check if the interface has an ipv6 address
+		addrs, err := intf.Addrs()
+		if err != nil {
+			continue
+		}
+
+		if !containsIPv6(addrs) {
+			continue
+		}
+
+		wcm.IfIndex = intf.Index
+		pconn.SetWriteDeadline(time.Now().Add(time.Second))
+		_, err = pconn.WriteTo(bs, wcm, gaddr)
+		pconn.SetWriteDeadline(time.Time{})
+
+		if err != nil {
+			continue
+		}
+
+		// fmt.Println("Sending Ping on interface:", intf.Name, intf.Flags)
+		success++
+	}
+
+	if success <= 0 {
+		// stop the multicast if there was an error and set the error
+		m.sendErr = ErrNoIPv6
+		// m.Stop()
+		// TODO: We shouldn't stop if there is an error but keep trying
+		return ErrNoIPv6
+	}
 
 	return nil
 }
