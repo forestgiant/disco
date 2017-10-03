@@ -255,18 +255,25 @@ func (n *Node) send(ctx context.Context) error {
 	currentIPv6 := localIPv6()
 
 	if !n.ipv4.Equal(currentIPv4) || !n.ipv6.Equal(currentIPv6) {
-		// Multicast a deregister of previous node
+		// Set deregister of previous node
 		n.mu.Lock()
 		n.Action = DeregisterAction
 		n.mu.Unlock()
-		if err := n.mc.Send(ctx, n.Encode()); err != nil {
-			return err
-		}
+
+		// Store previous to deregister
+		previousNodeState := n.Encode()
+
 		n.mu.Lock()
+		// Set to correct ipv4/6 and register
 		n.Action = RegisterAction
 		n.ipv4 = currentIPv4
 		n.ipv6 = currentIPv6
 		n.mu.Unlock()
+
+		// Send out Deregister of previousNodeState
+		if err := n.mc.Send(ctx, previousNodeState); err != nil {
+			return err
+		}
 	}
 
 	// Encode node to be sent via multicast
