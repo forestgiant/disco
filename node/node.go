@@ -220,8 +220,11 @@ func (n *Node) Multicast(ctx context.Context, multicastAddress string) <-chan er
 			select {
 			case <-n.ticker.C:
 				if err := n.send(ctx); err != nil {
-					errCh <- err
-					continue
+					select {
+					case errCh <- err:
+					default:
+						// Don't block
+					}
 				}
 			case <-n.Done():
 				n.ticker.Stop()
@@ -231,7 +234,12 @@ func (n *Node) Multicast(ctx context.Context, multicastAddress string) <-chan er
 	}()
 
 	// Call send right away
-	n.send(ctx)
+	if err := n.send(ctx); err != nil {
+		select {
+		case errCh <- err:
+		default:
+		}
+	}
 
 	return errCh
 }
