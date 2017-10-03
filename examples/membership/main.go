@@ -50,17 +50,27 @@ func main() {
 	}
 	defer ln.Close()
 
-	// Register ourselve as a node
+	// Register ourself as a node
 	n := &node.Node{Payload: []byte(ln.Addr().String()), SendInterval: 2 * time.Second}
 	errCh := n.Multicast(ctx, multicastAddr)
+
+	// Listen for any error messages
+	go func() {
+		for {
+			select {
+			case err := <-errCh:
+				fmt.Println(err)
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
 
 	// Listen for shutdown signal
 	sigs := make(chan os.Signal, 1)
 	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
 		select {
-		case err := <-errCh:
-			fmt.Println(err)
 		case <-sigs:
 			cancelFunc()
 		}
@@ -71,7 +81,5 @@ func main() {
 	case <-ctx.Done():
 		fmt.Println("Closing membership")
 		return
-		// os.Exit(0)
 	}
-
 }

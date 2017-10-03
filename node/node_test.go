@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -183,7 +184,63 @@ func Test_send(t *testing.T) {
 		}
 	}
 }
+func TestMulticastWithError(t *testing.T) {
+	n := &Node{}
 
+	errCh := make(chan error, 1)
+	ctx, cancelFunc := context.WithCancel(context.Background())
+
+	n.mu.Lock()
+
+	// Intentionally leave Address blank to error during multicast Send()
+	n.mc = &multicast.Multicast{}
+
+	// Set IPv4 and IPv6 to blank to make sure we prompt a deregister
+	n.ipv4 = net.IP{}
+	n.ipv6 = net.IP{}
+
+	// Stop existing ticker if it exists
+	if n.ticker != nil {
+		n.ticker.Stop()
+	}
+
+	n.ticker = time.NewTicker(10 * time.Millisecond)
+	n.mu.Unlock()
+
+	var count uint64 = 0
+
+	go func() {
+		for {
+			select {
+			case <-n.ticker.C:
+				atomic.AddUint64(&count, 1)
+				if atomic.LoadUint64(&count) == 3 {
+					cancelFunc()
+				}
+
+				if err := n.send(context.TODO()); err != nil {
+					select {
+					case errCh <- err:
+					default:
+						// Don't block
+					}
+
+				}
+			case <-ctx.Done():
+				n.ticker.Stop()
+				return
+			}
+		}
+	}()
+
+	select {
+	case <-ctx.Done():
+		n.ticker.Stop()
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("TestMultocastWithError timed out")
+		return
+	}
+}
 func TestMulticast(t *testing.T) {
 	var tests = []struct {
 		n *Node
