@@ -1,9 +1,7 @@
 package node
 
 import (
-	"bytes"
 	"context"
-	"encoding/gob"
 	"errors"
 	"net"
 	"sync"
@@ -147,19 +145,60 @@ func TestEqual(t *testing.T) {
 	}
 }
 
-func TestMulticast(t *testing.T) {
+func Test_send(t *testing.T) {
 	var tests = []struct {
-		n                *Node
-		multicastAddress string
+		n          *Node
+		shouldPass bool
 	}{
-		{&Node{SendInterval: 1 * time.Second}, "[ff12::9000]:21090"},
-		{&Node{Payload: []byte("foo, bar"), SendInterval: 1 * time.Second}, "[ff12::9000]:21090"},
-		{&Node{Payload: []byte("somekey, somevalue"), SendInterval: 1 * time.Second}, "[ff12::9000]:21090"},
+		{&Node{}, false},
+		{&Node{mc: &multicast.Multicast{Address: testMulticastAddress}}, true},
+		{&Node{ipv4: net.IP{}, mc: &multicast.Multicast{Address: testMulticastAddress}}, true},
+		{&Node{ipv4: net.IP{}, mc: &multicast.Multicast{}}, false},
+		{&Node{ipv4: localIPv4(), ipv6: localIPv6(), mc: &multicast.Multicast{}}, false},
 	}
 
-	ctx, cancelFunc := context.WithCancel(context.Background())
 	errCh := make(chan error, 1)
-	var mErrCh <-chan error
+	ctx, cancelFunc := context.WithCancel(context.TODO())
+
+	for _, test := range tests {
+		err := test.n.send(ctx)
+		if (err != nil) == test.shouldPass {
+			t.Fatal(err)
+		}
+
+		test.n.Stop()
+	}
+
+	cancelFunc()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case err := <-errCh:
+			t.Fatal(err)
+		case <-time.After(500 * time.Millisecond):
+			t.Fatal("TestMulticastIPChange timed out")
+			return
+		}
+	}
+}
+
+func TestMulticast(t *testing.T) {
+	var tests = []struct {
+		n *Node
+	}{
+		{&Node{SendInterval: 1 * time.Second}},
+		{&Node{Payload: []byte("foo, bar"), SendInterval: 1 * time.Second}},
+		{&Node{Payload: []byte("somekey, somevalue"), SendInterval: 1 * time.Second}},
+	}
+
+	var found = []struct {
+		n *Node
+	}{}
+
+	ctx, cancelFunc := context.WithCancel(context.TODO())
+	errCh := make(chan error, 1)
 	wg := &sync.WaitGroup{}
 
 	// Perform our test in a new goroutine so we don't block
@@ -176,18 +215,28 @@ func TestMulticast(t *testing.T) {
 			for {
 				select {
 				case resp := <-results:
-					buffer := bytes.NewBuffer(resp.Payload)
-
-					rn := &Node{}
-					dec := gob.NewDecoder(buffer)
-					if err := dec.Decode(rn); err != nil {
+					rn, err := DecodeNode(resp.Payload)
+					if err != nil {
 						errCh <- err
 					}
 
-					// Check if any nodes coming in are the ones we are waiting for
 					for _, test := range tests {
+						skip := false
+						// Check the slice of test to see if the response equals what is expected
 						if rn.Equal(test.n) {
-							test.n.Stop() // stop the node from multicasting
+							// Skip if it's already been found
+							for _, f := range found {
+								if rn.Equal(f.n) {
+									skip = true
+								}
+							}
+
+							if skip {
+								continue
+							}
+
+							found = append(found, test)
+							test.n.Stop()
 							wg.Done()
 						}
 					}
@@ -199,14 +248,18 @@ func TestMulticast(t *testing.T) {
 			}
 		}()
 
-		go func() {
-			for _, test := range tests {
-				// Add to the WaitGroup for each test
-				wg.Add(1)
-				mErrCh = test.n.Multicast(ctx, test.multicastAddress)
-			}
-		}()
+		for _, test := range tests {
+			// Add to the WaitGroup for each test
+			wg.Add(1)
+			mErrCh := test.n.Multicast(ctx, testMulticastAddress)
 
+			go func() {
+				err := <-mErrCh
+				errCh <- err
+			}()
+		}
+
+		// Wait for all tests to complete
 		wg.Wait()
 		listener.Stop()
 		cancelFunc()
@@ -217,11 +270,9 @@ func TestMulticast(t *testing.T) {
 		select {
 		case <-ctx.Done():
 			return
-		case err := <-mErrCh:
-			t.Fatal(err)
 		case err := <-errCh:
 			t.Fatal(err)
-		case <-time.After(100 * time.Millisecond):
+		case <-time.After(500 * time.Millisecond):
 			t.Fatal("TestMulticast timed out")
 			return
 		}

@@ -215,40 +215,11 @@ func (n *Node) Multicast(ctx context.Context, multicastAddress string) <-chan er
 	n.ticker = time.NewTicker(n.SendInterval)
 	n.mu.Unlock()
 
-	// Create send function
-	send := func() error {
-		// Check to see if IPv4 or 6 changed
-		currentIPv4 := localIPv4()
-		currentIPv6 := localIPv6()
-
-		if !n.ipv4.Equal(currentIPv4) || !n.ipv6.Equal(currentIPv6) {
-			// Multicast a deregister of previous node
-			n.mu.Lock()
-			n.Action = DeregisterAction
-			n.mu.Unlock()
-			if err := n.mc.Send(ctx, n.Encode()); err != nil {
-				return err
-			}
-			n.mu.Lock()
-			n.Action = RegisterAction
-			n.ipv4 = currentIPv4
-			n.ipv6 = currentIPv6
-			n.mu.Unlock()
-		}
-
-		// Encode node to be sent via multicast
-		if err := n.mc.Send(ctx, n.Encode()); err != nil {
-			return err
-		}
-
-		return nil
-	}
-
 	go func() {
 		for {
 			select {
 			case <-n.ticker.C:
-				if err := send(); err != nil {
+				if err := n.send(ctx); err != nil {
 					errCh <- err
 					continue
 				}
@@ -260,9 +231,42 @@ func (n *Node) Multicast(ctx context.Context, multicastAddress string) <-chan er
 	}()
 
 	// Call send right away
-	send()
+	n.send(ctx)
 
 	return errCh
+}
+
+// Create send function
+func (n *Node) send(ctx context.Context) error {
+	if n.mc == nil {
+		return errors.New("mc (multicast) property is nil")
+	}
+
+	// Check to see if IPv4 or 6 changed
+	currentIPv4 := localIPv4()
+	currentIPv6 := localIPv6()
+
+	if !n.ipv4.Equal(currentIPv4) || !n.ipv6.Equal(currentIPv6) {
+		// Multicast a deregister of previous node
+		n.mu.Lock()
+		n.Action = DeregisterAction
+		n.mu.Unlock()
+		if err := n.mc.Send(ctx, n.Encode()); err != nil {
+			return err
+		}
+		n.mu.Lock()
+		n.Action = RegisterAction
+		n.ipv4 = currentIPv4
+		n.ipv6 = currentIPv6
+		n.mu.Unlock()
+	}
+
+	// Encode node to be sent via multicast
+	if err := n.mc.Send(ctx, n.Encode()); err != nil {
+		return err
+	}
+
+	return nil
 }
 
 // Stop multicasting and ticking
@@ -273,7 +277,10 @@ func (n *Node) Stop() {
 	if n.ticker != nil {
 		n.ticker.Stop()
 	}
-	n.mc.Stop()
+
+	if n.mc != nil {
+		n.mc.Stop()
+	}
 }
 
 // IPv4 getter for ipv4Address
