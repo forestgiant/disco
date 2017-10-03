@@ -22,7 +22,6 @@ const (
 
 // Node represents a machine registered with Disco
 type Node struct {
-	// Values       Values
 	Payload      []byte // max 256 bytes
 	SrcIP        net.IP
 	SendInterval time.Duration
@@ -36,9 +35,6 @@ type Node struct {
 	registerCh   chan struct{}
 	ticker       *time.Ticker
 }
-
-// Values stores any values passed to the node
-type Values map[string]string
 
 func (n *Node) init() {
 	n.mu.Lock()
@@ -269,7 +265,7 @@ func (n *Node) Multicast(ctx context.Context, multicastAddress string) <-chan er
 	return errCh
 }
 
-// Stop closes the StopCh to stop multicast sending
+// Stop multicasting and ticking
 func (n *Node) Stop() {
 	n.mu.Lock()
 	defer n.mu.Unlock()
