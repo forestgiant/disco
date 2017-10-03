@@ -18,7 +18,7 @@ func TestListen(t *testing.T) {
 	}
 
 	sender := &Multicast{Address: testMulticastAddress}
-	if err := sender.Send(context.TODO(), []byte{}); err != nil {
+	if err := sender.Send(context.TODO(), []byte{0}); err != nil {
 		t.Fatal("Multicast Send should fail", err)
 	}
 
